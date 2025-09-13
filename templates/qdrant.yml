@@ -1,0 +1,48 @@
+networks:
+  ai-internal:
+    external: true
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: {{NAME}}
+    restart: unless-stopped
+    networks:
+      - ai-internal
+    expose: ["6333", "6334"]
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      # Performance optimizations
+      - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=32
+      - QDRANT__SERVICE__MAX_WORKERS=4
+    volumes:
+      - {{NAME}}_storage:/qdrant/storage
+      - {{NAME}}_snapshots:/qdrant/snapshots
+      - {{NAME}}_static:/qdrant/static
+    labels:
+      - traefik.enable=false  # Qdrant should only be accessible internally
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && exec 3<&- && exec 3>&-"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+volumes:
+  {{NAME}}_storage:
+    name: {{NAME}}_qdrant_storage
+  {{NAME}}_snapshots:
+    name: {{NAME}}_qdrant_snapshots
+  {{NAME}}_static:
+    name: {{NAME}}_qdrant_static

@@ -1,0 +1,80 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: 'n8n-stack'
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter for system metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # cAdvisor for container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Traefik metrics (if enabled)
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8082']  # Updated to correct metrics port
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # CloudFlared metrics (configured with static port)
+  - job_name: 'cloudflared'
+    static_configs:
+      - targets: ['cloudflared:2000']  # CloudFlared static metrics port
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Dynamic discovery for services with prometheus labels
+  - job_name: 'docker-services'
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 30s
+        match_first_network: false
+        filters:
+          - name: label
+            values: ["prometheus.io/scrape=true"]
+    relabel_configs:
+      # Use the container name as the instance label
+      - source_labels: [__meta_docker_container_name]
+        target_label: instance
+        regex: '/?(.*)'
+      # Only keep containers on the edge network (172.18.x.x)
+      - source_labels: [__meta_docker_network_ip]
+        regex: '172\.18\..*'
+        action: keep
+      # Construct address from edge network IP and prometheus.io/port label
+      - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_prometheus_io_port]
+        target_label: __address__
+        regex: '([^:]+);(.+)'
+        replacement: '${1}:${2}'
+        separator: ';'
+      # Use the prometheus.io/path label as the metrics path
+      - source_labels: [__meta_docker_container_label_prometheus_io_path]
+        target_label: __metrics_path__
+        regex: '(.+)'
+      # Add service name from container labels
+      - source_labels: [__meta_docker_container_label_service_name]
+        target_label: service_name
+      # Only scrape containers with the scrape label set to true
+      - source_labels: [__meta_docker_container_label_prometheus_io_scrape]
+        action: keep
+        regex: 'true'

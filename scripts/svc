@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""
+Service Management CLI for Decoupled Architecture
+Manages Docker Compose services with Traefik routing
+"""
+
+import os
+import sys
+import secrets
+import string
+from pathlib import Path
+from typing import Optional
+import typer
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn
+import docker
+import subprocess
+
+app = typer.Typer(help="Manage decoupled services with Traefik routing")
+console = Console()
+
+# Configuration
+PROJECT_ROOT = Path(__file__).parent.parent
+SERVICES_DIR = PROJECT_ROOT / "services"
+TEMPLATES_DIR = PROJECT_ROOT / "templates"
+EDGE_DIR = PROJECT_ROOT / "edge"
+
+def generate_password(length: int = 32) -> str:
+    """Generate a secure random password."""
+    alphabet = string.ascii_letters + string.digits + "!@#%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+def generate_hex_key(length: int = 32) -> str:
+    """Generate a hex key for encryption."""
+    return secrets.token_hex(length)
+
+def run_docker_compose(service_dir: Path, command: list, capture_output: bool = False, project_name: str = None):
+    """Run docker compose command with stable project name."""
+    # Use provided project name or default to directory name for stability
+    if project_name is None:
+        project_name = service_dir.name
+    cmd = ["docker", "compose", "-p", project_name] + command
+    cwd = service_dir
+
+    if capture_output:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    else:
+        return subprocess.run(cmd, cwd=cwd)
+
+@app.command()
+def new(
+    name: str = typer.Option(..., "--name", "-n", help="Service name"),
+    template: str = typer.Option("n8n", "--template", "-t", help="Template to use (n8n, generic-app, qdrant, ollama, postgresql)"),
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Domain for the service (not required for internal services)"),
+    image: Optional[str] = typer.Option(None, "--image", "-i", help="Docker image (for generic-app template)"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Port (for generic-app template)"),
+    # AI service specific options
+    models: str = typer.Option("llama3.2:1b,nomic-embed-text:latest", "--models", help="Comma-separated list of Ollama models to pull"),
+    num_threads: int = typer.Option(16, "--threads", help="Number of threads for Ollama"),
+    max_loaded_models: int = typer.Option(3, "--max-loaded-models", help="Max loaded models for Ollama"),
+):
+    """Create a new service in shared/services when deployed, local for development."""
+
+    # Use shared/services path when deployed, local for development
+    shared_services = Path("/opt/n8n-v2/shared/services")
+    if shared_services.exists():
+        service_dir = shared_services / name
+    else:
+        service_dir = SERVICES_DIR / name
+    template_file = TEMPLATES_DIR / f"{template}.yml"
+    
+    if service_dir.exists():
+        console.print(f"[red]Service {name} already exists![/red]")
+        raise typer.Exit(1)
+    
+    if not template_file.exists():
+        console.print(f"[red]Template {template} not found![/red]")
+        console.print(f"Available templates: {', '.join([f.stem for f in TEMPLATES_DIR.glob('*.yml')])}")
+        raise typer.Exit(1)
+    
+    # Validate template-specific requirements
+    if template == "n8n":
+        if not domain:
+            console.print("[red]N8N template requires --domain![/red]")
+            raise typer.Exit(1)
+    elif template == "generic-app":
+        if not image or not port or not domain:
+            console.print("[red]Generic app template requires --image, --port, and --domain![/red]")
+            raise typer.Exit(1)
+    elif template in ["qdrant", "ollama", "postgresql"]:
+        # Internal services don't require domain
+        pass
+    
+    # Create service directory
+    service_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Read template
+    template_content = template_file.read_text()
+    
+    # Generate secrets and replacements
+    replacements = {
+        "{{NAME}}": name,
+        "{{DOMAIN}}": domain or f"{name}.internal",
+    }
+    
+    if template == "n8n":
+        replacements.update({
+            "{{DB_PASSWORD}}": generate_password(),
+            "{{ENCRYPTION_KEY}}": generate_hex_key(),
+            "{{JWT_SECRET}}": generate_hex_key(16),
+        })
+    
+    elif template == "generic-app":
+        replacements.update({
+            "{{IMAGE}}": image,
+            "{{PORT}}": str(port),
+        })
+    
+    elif template == "ollama":
+        # Ollama template now has hardcoded defaults, no replacements needed
+        pass
+    
+    elif template == "postgresql":
+        replacements.update({
+            "{{DB_NAME}}": f"{name}_db",
+            "{{DB_USER}}": name,
+            "{{DB_PASSWORD}}": generate_password(),
+        })
+    
+    # Replace placeholders
+    for placeholder, value in replacements.items():
+        template_content = template_content.replace(placeholder, value)
+    
+    # Write compose file
+    compose_file = service_dir / "compose.yml"
+    compose_file.write_text(template_content)
+    
+    # Create .env file with sensitive data
+    if template in ["n8n", "postgresql", "ollama"]:
+        env_content = f"""# Generated configuration for {name}
+SERVICE_NAME={name}
+"""
+        
+        if template == "n8n":
+            env_content += f"""DB_PASSWORD={replacements['{{DB_PASSWORD}}']}
+ENCRYPTION_KEY={replacements['{{ENCRYPTION_KEY}}']}
+JWT_SECRET={replacements['{{JWT_SECRET}}']}
+DOMAIN={domain}
+"""
+        
+        elif template == "postgresql":
+            env_content += f"""DB_NAME={replacements['{{DB_NAME}}']}
+DB_USER={replacements['{{DB_USER}}']}
+DB_PASSWORD={replacements['{{DB_PASSWORD}}']}
+"""
+        
+        elif template == "ollama":
+            env_content += f"""NUM_THREADS={num_threads}
+MAX_LOADED_MODELS={max_loaded_models}
+MODELS={models}
+"""
+        
+        env_file = service_dir / ".env"
+        env_file.write_text(env_content)
+        # Secure the .env file
+        env_file.chmod(0o600)
+    
+    console.print(f"[green]✅ Service {name} created successfully![/green]")
+    console.print(f"[blue]Location:[/blue] {service_dir}")
+    
+    if domain and template not in ["qdrant", "ollama", "postgresql"]:
+        console.print(f"[blue]Domain:[/blue] https://{domain}")
+    elif template in ["qdrant", "ollama", "postgresql"]:
+        console.print(f"[blue]Access:[/blue] Internal only (not exposed to web)")
+        console.print(f"[blue]Network:[/blue] {name}_internal")
+    
+    console.print(f"\n[yellow]Next steps:[/yellow]")
+    console.print(f"  1. Review and customize: {compose_file}")
+    console.print(f"  2. Deploy the service: svc deploy {name}")
+    
+    if template == "ollama":
+        console.print(f"  3. Default models will be automatically pulled: llama3.2:1b, nomic-embed-text:latest")
+    elif template == "postgresql":
+        console.print(f"  3. Database '{replacements['{{DB_NAME}}']}' will be created")
+        console.print(f"  4. Connect using: host={name}, user={replacements['{{DB_USER}}']}")
+
+@app.command()
+def deploy(
+    name: str = typer.Argument(..., help="Service name to deploy"),
+    pull: bool = typer.Option(True, "--pull/--no-pull", help="Pull latest images before deploy")
+):
+    """Deploy a service with stable project name."""
+    # Look in shared/services when deployed
+    shared_services = Path("/opt/n8n-v2/shared/services")
+    if shared_services.exists():
+        service_dir = shared_services / name
+    else:
+        service_dir = SERVICES_DIR / name
+    
+    if not service_dir.exists():
+        console.print(f"[red]Service {name} not found![/red]")
+        raise typer.Exit(1)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        
+        if pull:
+            task = progress.add_task(f"Pulling images for {name}...", total=None)
+            result = run_docker_compose(service_dir, ["pull"], capture_output=True)
+            if result.returncode != 0:
+                progress.stop()
+                console.print(f"[red]Failed to pull images: {result.stderr}[/red]")
+                raise typer.Exit(1)
+        
+        task = progress.add_task(f"Deploying {name}...", total=None)
+        result = run_docker_compose(service_dir, ["up", "-d", "--remove-orphans"])
+        
+        if result.returncode != 0:
+            progress.stop()
+            console.print(f"[red]Failed to deploy {name}![/red]")
+            raise typer.Exit(1)
+    
+    console.print(f"[green]✅ Service {name} deployed successfully![/green]")
+    
+    # Show service info
+    info(name)
+
+@app.command()
+def remove(
+    name: str = typer.Argument(..., help="Service name to remove"),
+    volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove volumes too"),
+    force: bool = typer.Option(False, "--force", "-f", help="Don't ask for confirmation")
+):
+    """Remove a service."""
+    service_dir = SERVICES_DIR / name
+    
+    if not service_dir.exists():
+        console.print(f"[red]Service {name} not found![/red]")
+        raise typer.Exit(1)
+    
+    if not force:
+        confirm = typer.confirm(f"Remove service {name}? This cannot be undone.")
+        if not confirm:
+            console.print("Cancelled.")
+            raise typer.Exit(0)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task(f"Stopping {name}...", total=None)
+        cmd = ["down"]
+        if volumes:
+            cmd.append("-v")
+        
+        result = run_docker_compose(service_dir, cmd)
+        
+        if result.returncode != 0:
+            progress.stop()
+            console.print(f"[red]Failed to stop {name}![/red]")
+            raise typer.Exit(1)
+    
+    console.print(f"[green]✅ Service {name} removed![/green]")
+
+@app.command()
+def list():
+    """List all services."""
+    if not SERVICES_DIR.exists():
+        console.print("[yellow]No services directory found.[/yellow]")
+        return
+    
+    services = [d for d in SERVICES_DIR.iterdir() if d.is_dir()]
+    
+    if not services:
+        console.print("[yellow]No services found.[/yellow]")
+        return
+    
+    # Get Docker client to check running status
+    try:
+        docker_client = docker.from_env()
+        
+        table = Table(title="Services")
+        table.add_column("Name", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Domain", style="blue")
+        table.add_column("Template", style="magenta")
+        
+        for service_dir in sorted(services):
+            name = service_dir.name
+            compose_file = service_dir / "compose.yml"
+            
+            if not compose_file.exists():
+                continue
+            
+            # Try to determine status
+            try:
+                result = run_docker_compose(service_dir, ["ps", "--format", "json"], capture_output=True)
+                status = "🟢 Running" if result.returncode == 0 and result.stdout.strip() else "🔴 Stopped"
+            except:
+                status = "❓ Unknown"
+            
+            # Extract domain from compose file
+            domain = "N/A"
+            template_type = "Unknown"
+            try:
+                content = compose_file.read_text()
+                if "traefik.http.routers" in content:
+                    # Try to extract domain from Traefik labels
+                    for line in content.split('\n'):
+                        if 'Host(' in line and '`' in line:
+                            domain = line.split('`')[1]
+                            break
+                
+                # Determine template type
+                if "n8nio/n8n" in content:
+                    template_type = "N8N"
+                elif "qdrant/qdrant" in content:
+                    template_type = "Qdrant (Vector DB)"
+                elif "ollama/ollama" in content:
+                    template_type = "Ollama (LLM)"
+                elif "postgres:" in content:
+                    template_type = "PostgreSQL"
+                else:
+                    template_type = "Generic App"
+            except:
+                pass
+            
+            table.add_row(name, status, domain, template_type)
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error connecting to Docker: {e}[/red]")
+        
+        # Fallback: just list directories
+        console.print("\nServices (status unknown):")
+        for service_dir in sorted(services):
+            console.print(f"  • {service_dir.name}")
+
+@app.command()
+def info(
+    name: str = typer.Argument(..., help="Service name")
+):
+    """Show detailed information about a service."""
+    service_dir = SERVICES_DIR / name
+    
+    if not service_dir.exists():
+        console.print(f"[red]Service {name} not found![/red]")
+        raise typer.Exit(1)
+    
+    compose_file = service_dir / "compose.yml"
+    env_file = service_dir / ".env"
+    
+    console.print(f"[bold blue]Service: {name}[/bold blue]")
+    console.print(f"Location: {service_dir}")
+    
+    if compose_file.exists():
+        console.print(f"Compose file: {compose_file}")
+        
+        # Extract info from compose file
+        content = compose_file.read_text()
+        
+        # Extract domains
+        domains = []
+        for line in content.split('\n'):
+            if 'Host(' in line and '`' in line:
+                domain = line.split('`')[1]
+                domains.append(domain)
+        
+        if domains:
+            console.print(f"Domains: {', '.join(domains)}")
+    
+    if env_file.exists():
+        console.print(f"Environment file: {env_file}")
+    
+    # Show running status
+    try:
+        result = run_docker_compose(service_dir, ["ps"], capture_output=True)
+        if result.stdout.strip():
+            console.print(f"\n[bold]Running containers:[/bold]")
+            console.print(result.stdout)
+    except:
+        pass
+
+@app.command()
+def logs(
+    name: str = typer.Argument(..., help="Service name"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+    tail: int = typer.Option(50, "--tail", "-n", help="Number of lines to show")
+):
+    """Show logs for a service."""
+    service_dir = SERVICES_DIR / name
+    
+    if not service_dir.exists():
+        console.print(f"[red]Service {name} not found![/red]")
+        raise typer.Exit(1)
+    
+    cmd = ["logs", "--tail", str(tail)]
+    if follow:
+        cmd.append("-f")
+    
+    run_docker_compose(service_dir, cmd)
+
+@app.command()
+def restart(
+    name: str = typer.Argument(..., help="Service name")
+):
+    """Restart a service."""
+    service_dir = SERVICES_DIR / name
+    
+    if not service_dir.exists():
+        console.print(f"[red]Service {name} not found![/red]")
+        raise typer.Exit(1)
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task(f"Restarting {name}...", total=None)
+        result = run_docker_compose(service_dir, ["restart"])
+        
+        if result.returncode != 0:
+            progress.stop()
+            console.print(f"[red]Failed to restart {name}![/red]")
+            raise typer.Exit(1)
+    
+    console.print(f"[green]✅ Service {name} restarted![/green]")
+
+@app.command()
+def edge(
+    action: str = typer.Argument(..., help="Action: deploy, logs, restart, status")
+):
+    """Manage the edge stack (Traefik + CloudFlared)."""
+    
+    if not EDGE_DIR.exists():
+        console.print("[red]Edge directory not found![/red]")
+        raise typer.Exit(1)
+    
+    if action == "deploy":
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Deploying edge stack...", total=None)
+            result = run_docker_compose(EDGE_DIR, ["up", "-d", "--remove-orphans"], project_name="edge")
+            
+            if result.returncode != 0:
+                progress.stop()
+                console.print("[red]Failed to deploy edge stack![/red]")
+                raise typer.Exit(1)
+        
+        console.print("[green]✅ Edge stack deployed![/green]")
+        
+    elif action == "logs":
+        run_docker_compose(EDGE_DIR, ["logs", "-f", "--tail", "50"], project_name="edge")
+        
+    elif action == "restart":
+        run_docker_compose(EDGE_DIR, ["restart"], project_name="edge")
+        console.print("[green]✅ Edge stack restarted![/green]")
+        
+    elif action == "status":
+        result = run_docker_compose(EDGE_DIR, ["ps"], capture_output=True, project_name="edge")
+        console.print(result.stdout)
+        
+    else:
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: deploy, logs, restart, status")
+
+@app.command() 
+def init():
+    """Initialize the project structure."""
+    
+    console.print("[blue]Initializing project structure...[/blue]")
+    
+    # Create directories
+    directories = [SERVICES_DIR, TEMPLATES_DIR]
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+        console.print(f"  ✅ {directory}")
+    
+    # Check if edge stack is configured
+    edge_compose = EDGE_DIR / "docker-compose.yml"
+    edge_config = EDGE_DIR / "cloudflared" / "config.yml"
+    
+    if edge_compose.exists():
+        console.print(f"  ✅ {edge_compose}")
+    else:
+        console.print(f"  ❌ {edge_compose} - Configure your CloudFlare tunnel")
+    
+    if edge_config.exists():
+        console.print(f"  ✅ {edge_config}")
+    else:
+        console.print(f"  ❌ {edge_config} - Add your tunnel credentials")
+    
+    console.print(f"\n[green]Project initialized![/green]")
+    console.print(f"[yellow]Next steps:[/yellow]")
+    console.print("  1. Configure CloudFlare tunnel in edge/cloudflared/config.yml")
+    console.print("  2. Deploy edge stack: svc edge deploy")
+    console.print("  3. Create your first service: svc new --name myapp --domain myapp.example.com")
+
+if __name__ == "__main__":
+    app()

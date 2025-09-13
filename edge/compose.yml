@@ -1,0 +1,79 @@
+networks:
+  edge:
+    external: true
+
+services:
+  traefik:
+    image: traefik:latest
+    restart: unless-stopped
+    networks: [edge]
+    # No host ports; traffic arrives via cloudflared inside the network
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entryPoints.web.address=:80
+      - --entryPoints.metrics.address=:8082
+      - --entryPoints.ping.address=:8081
+      # Enable dashboard on / (protect with CF Access)
+      - --api.dashboard=true
+      # Prometheus metrics
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entrypoint=metrics
+      # Logging
+      - --log.level=INFO
+      - --accesslog=true
+      # Enable ping endpoint
+      - --ping=true
+      - --ping.entryPoint=ping
+      # Enable Docker provider
+      - --providers.docker.network=edge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      # Traefik dashboard at traefik.example.com
+      - traefik.enable=true
+      - traefik.http.routers.traefik.rule=Host(`traefik.example.com`)
+      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.routers.traefik.entrypoints=web
+      # Metrics endpoint
+      - >
+        traefik.http.routers.metrics.rule=Host(`traefik.example.com`) &&
+        Path(`/metrics`)
+      - traefik.http.routers.metrics.service=prometheus@internal
+      - traefik.http.routers.metrics.entrypoints=metrics
+      - traefik.http.routers.metrics.middlewares=metrics-auth
+      - "traefik.http.middlewares.metrics-auth.basicauth.users=metrics:$$apr1$$K1S6aVmJ$$eXuzqkAScyT4exq/YsOOx0"
+    # Enable healthcheck for deployment validation
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--timeout=5", "http://localhost:8081/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    networks: [edge]
+    dns:
+      - "1.1.1.1"
+      - "1.0.0.1"
+      - "8.8.8.8"
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json:/etc/cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json:ro
+      - /root/.cloudflared/cert.pem:/etc/cloudflared/cert.pem:ro
+    environment:
+      - TUNNEL_FORCE_PROVISIONING_DNS=true
+      - TUNNEL_TRANSPORT_PROTOCOL=http2
+      - TUNNEL_PROTOCOL=http2
+      - TUNNEL_EDGE_IP_VERSION=4
+      - TUNNEL_DNS_UPSTREAM=1.1.1.1
+      - TUNNEL_METRICS=0.0.0.0:2000
+    command: tunnel --no-autoupdate --loglevel debug --edge-ip-version 4 --metrics 0.0.0.0:2000 run fac1d753-a32c-4778-9a7e-f62f48b4675b
+    healthcheck:
+      test: ["CMD", "cloudflared", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
