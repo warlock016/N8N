@@ -1,0 +1,338 @@
+name: Service Management
+
+"on":
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - create-service
+          - deploy-service
+          - remove-service
+          - restart-service
+          - scale-service
+      service_name:
+        description: 'Service name'
+        required: true
+        type: string
+      service_domain:
+        description: 'Service domain (for create-service)'
+        required: false
+        type: string
+      service_template:
+        description: 'Service template (for create-service)'
+        required: false
+        type: choice
+        default: 'n8n'
+        options:
+          - n8n
+          - ollama
+          - qdrant
+          - generic-app
+      docker_image:
+        description: 'Docker image (for generic-app)'
+        required: false
+        type: string
+      port:
+        description: 'Port (for generic-app)'
+        required: false
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        default: 'staging'
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: service-mgmt-${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
+  cancel-in-progress: false
+
+jobs:
+  manage-service:
+    runs-on: ubuntu-latest
+    name: ${{ github.event.inputs.action }} - ${{ github.event.inputs.service_name }}
+    
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        if: github.event.inputs.action == 'create-service'
+
+      - name: Set deployment variables
+        id: vars
+        run: |
+          if [[ "${{ github.event.inputs.environment }}" == "production" ]]; then
+            echo "vps_host=${{ secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-production" >> $GITHUB_OUTPUT
+          else
+            echo "vps_host=${{ secrets.STAGING_VPS_HOST || secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.vars.outputs.vps_host }} >> ~/.ssh/known_hosts
+
+      - name: Create service
+        if: github.event.inputs.action == 'create-service'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << 'EOF'
+            set -e
+            
+            DEPLOY_PATH="${{ steps.vars.outputs.deploy_path }}"
+            SERVICE_NAME="${{ github.event.inputs.service_name }}"
+            SERVICE_DOMAIN="${{ github.event.inputs.service_domain }}"
+            TEMPLATE="${{ github.event.inputs.service_template }}"
+            
+            cd "$DEPLOY_PATH"
+            
+            echo "🎯 Creating service: $SERVICE_NAME"
+            echo "📋 Template: $TEMPLATE"
+            echo "🌐 Domain: $SERVICE_DOMAIN"
+            
+            # Create service directory
+            mkdir -p "services/$SERVICE_NAME"
+            
+            # Generate configuration based on template
+            case "$TEMPLATE" in
+              "n8n")
+                # Generate N8N service
+                cat > "services/$SERVICE_NAME/compose.yml" << COMPOSE_EOF
+            networks:
+              edge:
+                external: true
+              ${SERVICE_NAME}_internal:
+                name: ${SERVICE_NAME}_internal
+                driver: bridge
+
+            services:
+              ${SERVICE_NAME}:
+                image: n8nio/n8n:latest
+                restart: unless-stopped
+                networks: 
+                  - edge
+                  - ${SERVICE_NAME}_internal
+                expose: ["5678"]
+                environment:
+                  - N8N_PORT=5678
+                  - N8N_PROTOCOL=http
+                  - N8N_HOST=${SERVICE_DOMAIN}
+                  - WEBHOOK_URL=https://${SERVICE_DOMAIN}/
+                  - N8N_PROXY_HOPS=1
+                  - DB_TYPE=postgresdb
+                  - DB_POSTGRESDB_HOST=${SERVICE_NAME}_postgres
+                  - DB_POSTGRESDB_PORT=5432
+                  - DB_POSTGRESDB_DATABASE=${SERVICE_NAME}_db
+                  - DB_POSTGRESDB_USER=n8n
+                  - DB_POSTGRESDB_PASSWORD=\${DB_PASSWORD}
+                  - N8N_ENCRYPTION_KEY=\${N8N_ENCRYPTION_KEY}
+                  - N8N_USER_MANAGEMENT_JWT_SECRET=\${JWT_SECRET}
+                volumes:
+                  - ${SERVICE_NAME}_data:/home/node/.n8n
+                  - ${SERVICE_NAME}_files:/files
+                labels:
+                  - traefik.enable=true
+                  - traefik.http.routers.${SERVICE_NAME}.rule=Host(\`${SERVICE_DOMAIN}\`)
+                  - traefik.http.services.${SERVICE_NAME}.loadbalancer.server.port=5678
+                healthcheck:
+                  test: ["CMD", "wget", "-q", "--spider", "http://localhost:5678/healthz"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                depends_on:
+                  ${SERVICE_NAME}_postgres:
+                    condition: service_healthy
+
+              ${SERVICE_NAME}_postgres:
+                image: postgres:16-alpine
+                restart: unless-stopped
+                networks:
+                  - ${SERVICE_NAME}_internal
+                environment:
+                  POSTGRES_DB: ${SERVICE_NAME}_db
+                  POSTGRES_USER: n8n
+                  POSTGRES_PASSWORD: \${DB_PASSWORD}
+                volumes:
+                  - ${SERVICE_NAME}_postgres_data:/var/lib/postgresql/data
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U n8n -d ${SERVICE_NAME}_db"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 5
+
+            volumes:
+              ${SERVICE_NAME}_data:
+                name: ${SERVICE_NAME}_n8n_data
+              ${SERVICE_NAME}_files:
+                name: ${SERVICE_NAME}_n8n_files
+              ${SERVICE_NAME}_postgres_data:
+                name: ${SERVICE_NAME}_postgres_data
+            COMPOSE_EOF
+                
+                # Generate secrets
+                DB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+                ENCRYPTION_KEY=$(openssl rand -hex 32)
+                JWT_SECRET=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+                
+                cat > "services/$SERVICE_NAME/.env" << ENV_EOF
+            # Generated secrets for $SERVICE_NAME
+            DB_PASSWORD=$DB_PASSWORD
+            N8N_ENCRYPTION_KEY=$ENCRYPTION_KEY
+            JWT_SECRET=$JWT_SECRET
+
+            # Service configuration
+            SERVICE_NAME=$SERVICE_NAME
+            DOMAIN=$SERVICE_DOMAIN
+            ENV_EOF
+                chmod 600 "services/$SERVICE_NAME/.env"
+                ;;
+                
+              "generic-app")
+                # Generate generic app service
+                IMAGE="${{ github.event.inputs.docker_image }}"
+                PORT="${{ github.event.inputs.port }}"
+                
+                cat > "services/$SERVICE_NAME/compose.yml" << COMPOSE_EOF
+            networks:
+              edge:
+                external: true
+
+            services:
+              ${SERVICE_NAME}:
+                image: ${IMAGE}
+                restart: unless-stopped
+                networks: [edge]
+                expose: ["${PORT}"]
+                labels:
+                  - traefik.enable=true
+                  - traefik.http.routers.${SERVICE_NAME}.rule=Host(\`${SERVICE_DOMAIN}\`)
+                  - traefik.http.services.${SERVICE_NAME}.loadbalancer.server.port=${PORT}
+            COMPOSE_EOF
+                ;;
+            esac
+            
+            echo "✅ Service $SERVICE_NAME created successfully"
+            echo "📍 Location: services/$SERVICE_NAME/"
+            echo "🌐 Domain: https://$SERVICE_DOMAIN"
+            EOF
+
+      - name: Deploy service
+        if: github.event.inputs.action == 'deploy-service' || github.event.inputs.action == 'create-service'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << 'EOF'
+            set -e
+            
+            DEPLOY_PATH="${{ steps.vars.outputs.deploy_path }}"
+            SERVICE_NAME="${{ github.event.inputs.service_name }}"
+            
+            cd "$DEPLOY_PATH/services/$SERVICE_NAME"
+            
+            echo "🚀 Deploying service: $SERVICE_NAME"
+            
+            # Pull latest images and deploy
+            docker compose pull
+            docker compose up -d --remove-orphans
+            
+            echo "✅ Service $SERVICE_NAME deployed"
+            
+            # Show status
+            docker compose ps
+            EOF
+
+      - name: Remove service with comprehensive backup
+        if: github.event.inputs.action == 'remove-service'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << 'EOF'
+            set -euo pipefail
+            SERVICE="${{ github.event.inputs.service_name }}"
+            DEPLOY_PATH="${{ steps.vars.outputs.deploy_path }}"
+            SHARED="$DEPLOY_PATH/shared"
+            TS=$(date +%Y%m%d_%H%M%S)
+
+            # Verify service exists in shared/services
+            if [ ! -d "$SHARED/services/$SERVICE" ]; then
+              echo "❌ Service $SERVICE not found in shared/services"
+              exit 1
+            fi
+
+            echo "📦 Creating final backups for service $SERVICE..."
+
+            # Set secure umask
+            umask 077
+
+            # Backup configuration
+            tar czf "$SHARED/backups/configs/${SERVICE}_final_${TS}.tar.gz" \
+              -C "$SHARED/services" "$SERVICE"
+
+            # Backup database (with correct naming pattern)
+            if docker ps --format '{{.Names}}' | grep -q "^${SERVICE}_postgres$"; then
+              echo "  Backing up database..."
+              docker exec "${SERVICE}_postgres" sh -c "pg_dump -U n8n ${SERVICE}_db -Fc" \
+                > "$SHARED/backups/databases/${SERVICE}_final_${TS}.dump" || \
+                echo "  ⚠️ Database backup failed"
+            fi
+
+            # Backup volumes
+            for vol in $(docker volume ls -q | grep "^${SERVICE}_" || true); do
+              echo "  Backing up volume $vol..."
+              docker run --rm -v "$vol":/data -v "$SHARED/backups/volumes":/backup alpine \
+                sh -c "tar czf /backup/${vol}_final_${TS}.tar.gz -C / data"
+            done
+
+            # Remove service with correct project name
+            echo "🗑️ Removing service..."
+            cd "$SHARED/services/$SERVICE"
+            docker compose -p "$SERVICE" down -v
+
+            # Remove configuration
+            rm -rf "$SHARED/services/$SERVICE"
+
+            echo "✅ Service $SERVICE removed"
+            echo "📋 Backups saved in $SHARED/backups/"
+          EOF
+
+      - name: Restart service
+        if: github.event.inputs.action == 'restart-service'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << 'EOF'
+            set -e
+            
+            DEPLOY_PATH="${{ steps.vars.outputs.deploy_path }}"
+            SERVICE_NAME="${{ github.event.inputs.service_name }}"
+            
+            cd "$DEPLOY_PATH/services/$SERVICE_NAME"
+            
+            echo "🔄 Restarting service: $SERVICE_NAME"
+            
+            docker compose restart
+            
+            echo "✅ Service $SERVICE_NAME restarted"
+            
+            # Show status
+            docker compose ps
+            EOF
+
+      - name: Action summary
+        run: |
+          echo "## 🎯 Service Management Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${{ github.event.inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Target:** ${{ steps.vars.outputs.vps_host }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.action }}" = "create-service" ]; then
+            echo "**Domain:** ${{ github.event.inputs.service_domain }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Template:** ${{ github.event.inputs.service_template }}" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,462 @@
+name: Deploy to VPS
+
+"on":
+  push:
+    branches: [ main, production, staging ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: 'Specific service to deploy (leave empty for all)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run mode (prepare but do not activate)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || github.ref }}-${{ github.repository }}
+  cancel-in-progress: true  # Cancel previous deployments to prevent redundancy
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test Configuration
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --cache-dir ~/.cache/pip -r requirements.txt
+
+      - name: Validate Docker Compose files
+        run: |
+          # Test edge stack configuration
+          cd edge && docker compose config --quiet
+
+          # Test monitoring stack
+          cd ../monitoring && docker compose config --quiet
+
+          # Test service templates (exclude CloudFlared config which is not a Docker Compose file)
+          cd ../templates
+          for template in *.yml; do
+            # Skip CloudFlared config template as it's not a Docker Compose file
+            if [[ "$template" == "system-cloudflared-config.yml" ]]; then
+              echo "Skipping CloudFlared config template: $template"
+              continue
+            fi
+            echo "Validating template: $template"
+            # Replace template variables with test values
+            sed 's/{{NAME}}/test/g; s/{{DOMAIN}}/test.example.com/g; s/{{PORT}}/8080/g; s/{{IMAGE}}/nginx/g; s/{{DB_PASSWORD}}/test/g; s/{{ENCRYPTION_KEY}}/test/g; s/{{JWT_SECRET}}/test/g; s/{{WEBHOOK_DOMAIN}}/hooks.example.com/g' "$template" > "test-$template"
+            docker compose -f "test-$template" config --quiet
+          done
+
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          find scripts -name "*.sh" -exec shellcheck {} \;
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Deploy to VPS
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production' || github.ref == 'refs/heads/staging' || github.event_name == 'workflow_dispatch'
+    
+    environment: 
+      name: ${{ github.ref == 'refs/heads/production' && 'production' || (github.event.inputs.environment || 'staging') }}
+      url: ${{ vars.DEPLOYMENT_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set deployment variables
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "vps_host=${{ secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "vps_host=${{ secrets.STAGING_VPS_HOST || secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.vars.outputs.vps_host }} >> ~/.ssh/known_hosts
+
+      - name: Create deployment package
+        run: |
+          # Create clean deployment package
+          mkdir -p deploy-package
+
+          # Copy necessary files (excluding development files)
+          rsync -av \
+            --exclude='.git*' \
+            --exclude='.github' \
+            --exclude='.DS_Store' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.claude' \
+            --exclude='.windsurf' \
+            --exclude='venv/' \
+            --exclude='node_modules/' \
+            --exclude='services/*/data' \
+            --exclude='monitoring/*/data' \
+            --exclude='deploy-package' \
+            . deploy-package/
+
+          # Create CloudFlare credentials from GitHub secret
+          mkdir -p deploy-package/edge/cloudflared
+          echo '${{ secrets.CLOUDFLARE_TUNNEL_CREDENTIALS }}' > deploy-package/edge/cloudflared/${{ secrets.CLOUDFLARE_TUNNEL_ID }}.json
+          
+          # Create deployment info
+          cat > deploy-package/deployment-info.json << EOF
+          {
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "environment": "${{ steps.vars.outputs.environment }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "triggered_by": "${{ github.actor }}",
+            "workflow": "${{ github.workflow }}"
+          }
+          EOF
+          
+          # Create archive
+          tar -czf deployment.tar.gz -C deploy-package .
+
+      - name: Upload deployment package
+        run: |
+          scp -i ~/.ssh/id_rsa deployment.tar.gz root@${{ steps.vars.outputs.vps_host }}:/tmp/
+
+      - name: Deploy to VPS
+        env:
+          DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+            set -euo pipefail
+            DEPLOY_PATH="${DEPLOY_PATH}"
+            DRY_RUN="${DRY_RUN}"
+            RELEASES="\$DEPLOY_PATH/releases"
+            SHARED="\$DEPLOY_PATH/shared"
+            TS="\$(date +%Y%m%d_%H%M%S)"
+            NEW_REL="\$RELEASES/\$TS"
+
+            echo "🚀 Deploying release \$TS to \$DEPLOY_PATH (dry_run=\$DRY_RUN)"
+
+            # Set secure umask
+            umask 077
+
+            # Create directory structure
+            mkdir -p "\$RELEASES" "\$SHARED/services" "\$SHARED/env"
+            mkdir -p "\$SHARED/backups/"{configs,databases,volumes}
+
+            # Pre-deployment backups
+            echo "📦 Creating comprehensive backups..."
+
+            # 1. Backup configurations
+            if [ -d "\$SHARED/services" ] && [ "\$(ls -A "\$SHARED/services")" ]; then
+              tar czf "\$SHARED/backups/configs/services_\${TS}.tar.gz" \
+                -C "\$SHARED" services env 2>/dev/null || true
+            fi
+
+            # 2. Backup databases with proper container naming
+            for container in \$(docker ps --format '{{.Names}}' | grep '_postgres\$' || true); do
+              service_name="\${container%_postgres}"
+              echo "  Backing up database for \$service_name..."
+              docker exec "\$container" sh -c "pg_dump -U n8n \${service_name}_db -Fc" \
+                > "\$SHARED/backups/databases/\${service_name}_\${TS}.dump" 2>/dev/null || \
+                echo "  ⚠️ Database backup failed for \$service_name"
+            done
+
+            # 3. Backup global database roles (once per backup set)
+            PGCONT=\$(docker ps --format '{{.Names}}' | grep '_postgres\$' | head -1 || true)
+            if [ -n "\$PGCONT" ]; then
+              docker exec "\$PGCONT" sh -c 'pg_dumpall -U n8n -g' \
+                > "\$SHARED/backups/databases/_globals_\${TS}.sql" 2>/dev/null || true
+            fi
+
+            # 4. Backup critical volumes (excluding ollama due to large model files)
+            for vol in \$(docker volume ls -q | grep -E 'n8n_data|n8n_files|qdrant' || true); do
+              echo "  Backing up volume \$vol..."
+              docker run --rm -v "\$vol":/data -v "\$SHARED/backups/volumes":/backup alpine \
+                sh -c "tar czf /backup/\${vol}_\${TS}.tar.gz -C / data"
+            done
+
+            # 5. Prune old backups (keep last 7, with proper grouping)
+            echo "  Pruning old backups..."
+            find "\$SHARED/backups" \( -type f \( -name '*.tar.gz' -o -name '*.sql' -o -name '*.dump' \) \) \
+              -printf '%T@ %p\n' | sort -rn | awk 'NR>7 {print \$2}' | xargs -r rm -f
+
+            # Extract new release
+            echo "📦 Extracting new release..."
+            mkdir -p "\$NEW_REL"
+            tar -xzf /tmp/deployment.tar.gz -C "\$NEW_REL"
+
+            # Copy deployment metadata
+            if [ -f "\$NEW_REL/deployment-info.json" ]; then
+              cp "\$NEW_REL/deployment-info.json" "\$NEW_REL/DEPLOYMENT_INFO.json"
+            fi
+            echo "RELEASE_ID=\$TS" > "\$NEW_REL/RELEASE_ID"
+
+            # Remove any services directory from release (use shared instead)
+            rm -rf "\$NEW_REL/services"
+
+            # Link shared resources
+            ln -sfn "\$SHARED/services" "\$NEW_REL/services"
+            ln -sfn "\$SHARED/env" "\$NEW_REL/env"
+
+            # CloudFlared credentials are now included in the deployment package from GitHub secrets
+
+            # Install/update Python dependencies in release
+            if [ -f "\$NEW_REL/requirements.txt" ]; then
+              echo "🐍 Updating Python dependencies..."
+              cd "\$NEW_REL"
+              if [ ! -d "\$NEW_REL/venv" ]; then
+                echo "📦 Creating Python virtual environment..."
+                python3 -m venv "\$NEW_REL/venv"
+              fi
+              echo "🔧 Installing dependencies in virtual environment..."
+              source "\$NEW_REL/venv/bin/activate"
+              pip install --upgrade pip
+              pip install -r "\$NEW_REL/requirements.txt"
+            fi
+
+            if [ "\$DRY_RUN" = "true" ]; then
+              echo "🔍 DRY RUN: Release prepared but not activated"
+              echo "  New release at: \$NEW_REL"
+              echo "  Current still points to: \$(readlink -f "\$DEPLOY_PATH/current")"
+              exit 0
+            fi
+
+            # Switch to new release atomically
+            echo "🔄 Switching to new release..."
+            ln -sfn "\$NEW_REL" "\$DEPLOY_PATH/current"
+
+            # Clean old releases (but never delete what current points to)
+            echo "  Cleaning old releases..."
+            CURR="\$(readlink -f "\$DEPLOY_PATH/current" || true)"
+            for rel in \$(ls -1t "\$RELEASES" | tail -n +6); do
+              [ "\$RELEASES/\$rel" = "\$CURR" ] && continue
+              rm -rf "\$RELEASES/\$rel"
+            done
+
+            echo "✅ Release \$TS deployed"
+          EOF
+
+      - name: Update Services
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+            set -euo pipefail
+            DEPLOY_PATH="${DEPLOY_PATH}"
+            cd "\$DEPLOY_PATH/current"
+
+            # Ensure networks exist
+            docker network create edge >/dev/null 2>&1 || true
+            docker network create ai-internal >/dev/null 2>&1 || true
+
+            # Update edge stack with health check
+            echo "📡 Updating edge stack..."
+            docker compose -p edge -f edge/compose.yml pull
+            docker compose -p edge -f edge/compose.yml up -d --remove-orphans
+
+            # Wait for edge to be healthy
+            echo "  Waiting for edge to be ready..."
+            for i in {1..30}; do
+              # Check Docker health status first (more reliable)
+              health_status=\$(docker inspect edge-traefik-1 --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
+              if [ "\$health_status" = "healthy" ]; then
+                echo "  ✅ Edge is healthy (attempt \$i/30)"
+                break
+              elif docker exec edge-traefik-1 wget -qO- --timeout=5 http://localhost:8081/ping 2>/dev/null; then
+                echo "  ✅ Edge is responding (attempt \$i/30)"
+                break
+              fi
+
+              if [ "\$i" -eq 30 ]; then
+                echo "  ⚠️ Edge health check timeout after 30 attempts"
+                echo "  Container health status: \$health_status"
+                echo "  Container logs (last 10 lines):"
+                docker logs edge-traefik-1 --tail 10 2>/dev/null || echo "  Could not get container logs"
+              else
+                echo "  Attempt \$i/30: health=\$health_status, retrying in 2s..."
+              fi
+              sleep 2
+            done
+
+            # Update monitoring if specified or full deployment
+            if [ -z "${{ github.event.inputs.service }}" ] || [ "${{ github.event.inputs.service }}" = "monitoring" ]; then
+              echo "📊 Updating monitoring..."
+              docker compose -p monitoring -f monitoring/compose.yml pull
+              docker compose -p monitoring -f monitoring/compose.yml up -d --remove-orphans
+            fi
+
+            # Update specific service if specified
+            if [ -n "${{ github.event.inputs.service }}" ] && [ "${{ github.event.inputs.service }}" != "monitoring" ]; then
+              SVC="${{ github.event.inputs.service }}"
+              if [ -d "\$DEPLOY_PATH/shared/services/\$SVC" ]; then
+                echo "🎯 Updating service: \$SVC"
+                cd "\$DEPLOY_PATH/shared/services/\$SVC"
+                docker compose -p "\$SVC" pull
+                docker compose -p "\$SVC" up -d --remove-orphans
+              else
+                echo "⚠️ Service \$SVC not found in shared/services/"
+              fi
+            else
+              echo "📝 No specific service requested - edge/monitoring only"
+            fi
+
+            echo "✅ Services updated"
+          EOF
+
+      - name: Health check
+        env:
+          DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+            set -e
+            set -o pipefail
+            DEPLOY_PATH="${DEPLOY_PATH}"
+            cd "\$DEPLOY_PATH"
+            
+            echo "🔍 Performing health checks..."
+
+            # Wait for services to stabilize after deployment
+            sleep 10
+            
+            # Check edge stack
+            echo "Checking edge stack..."
+            cd "\$DEPLOY_PATH/current/edge"
+            docker compose ps
+            
+            # Basic connectivity test
+            echo "Testing internal connectivity..."
+            docker exec edge-traefik-1 wget -qO- --timeout=10 http://localhost:8081/ping 2>/dev/null || echo "Traefik ping not responding (this may be normal)"
+            
+            # Check if any services are unhealthy
+            unhealthy=\$(docker ps --filter "health=unhealthy" --format "{{.Names}}" | wc -l)
+            if [ "\$unhealthy" -gt 0 ]; then
+              echo "⚠️ Warning: \$unhealthy unhealthy containers detected"
+              docker ps --filter "health=unhealthy" --format "table {{.Names}}\t{{.Status}}"
+            fi
+            
+            # Show running containers
+            echo "📊 Running containers:"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            echo "✅ Health check completed"
+          EOF
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ steps.vars.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Target:** ${{ steps.vars.outputs.vps_host }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Path:** ${{ steps.vars.outputs.deploy_path }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ github.event.inputs.service }}" ]; then
+            echo "**Specific service deployed:** ${{ github.event.inputs.service }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Deployment type:** Full deployment" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  rollback:
+    runs-on: ubuntu-latest
+    name: Rollback (Manual)
+    if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production' || github.ref == 'refs/heads/staging')
+    needs: [deploy]
+    
+    steps:
+      - name: Set deployment variables for rollback
+        id: rollback_vars
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+            echo "vps_host=${{ secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-production" >> $GITHUB_OUTPUT
+          else
+            echo "vps_host=${{ secrets.STAGING_VPS_HOST || secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.rollback_vars.outputs.vps_host }} >> ~/.ssh/known_hosts
+
+      - name: Rollback deployment
+        env:
+          DEPLOY_PATH: ${{ steps.rollback_vars.outputs.deploy_path }}
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ steps.rollback_vars.outputs.vps_host }} << EOF
+            set -euo pipefail
+            DEPLOY_PATH="${DEPLOY_PATH}"
+
+            echo "🔄 Rolling back to previous release..."
+
+            # Find previous release
+            CURR_REL=\$(basename "\$(readlink -f "\$DEPLOY_PATH/current")")
+            PREV=\$(ls -1t "\$DEPLOY_PATH/releases" | grep -v "^\$CURR_REL\$" | head -1)
+
+            if [ -n "\$PREV" ]; then
+              echo "📋 Rolling back from \$CURR_REL to \$PREV"
+
+              # Switch symlink
+              ln -sfn "\$DEPLOY_PATH/releases/\$PREV" "\$DEPLOY_PATH/current"
+
+              # Restart only edge and monitoring with stable project names
+              cd "\$DEPLOY_PATH/current"
+              docker compose -p edge -f edge/compose.yml up -d --force-recreate
+              docker compose -p monitoring -f monitoring/compose.yml up -d --force-recreate
+
+              echo "✅ Rolled back to \$PREV"
+            else
+              echo "❌ No previous release found"
+              echo "Available releases:"
+              ls -la "\$DEPLOY_PATH/releases/" 2>/dev/null || echo "Releases directory does not exist"
+              exit 1
+            fi
+          EOF

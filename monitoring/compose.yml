@@ -1,0 +1,198 @@
+
+networks:
+  edge:
+    external: true
+  monitoring:
+    name: monitoring
+    driver: bridge
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    networks: 
+      - edge
+      - monitoring
+    expose: ["9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    group_add:
+      - "988"  # docker group ID for access to Docker socket
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--web.listen-address=:9090'
+      - '--web.external-url=https://prometheus.automat.it.com'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=Host(`prometheus.automat.it.com`)
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+      # Security headers
+      - traefik.http.middlewares.prometheus-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.prometheus-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.prometheus-headers.headers.frameDeny=true
+      - traefik.http.routers.prometheus.middlewares=prometheus-headers
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    networks: 
+      - edge
+      - monitoring
+    expose: ["3000"]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+      - GF_SERVER_ROOT_URL=https://grafana.automat.it.com
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      # Security settings
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      - GF_SECURITY_CONTENT_TYPE_PROTECTION=true
+      - GF_SECURITY_X_CONTENT_TYPE_OPTIONS=nosniff
+      - GF_SECURITY_X_XSS_PROTECTION=true
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`grafana.automat.it.com`)
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+      # Security headers
+      - traefik.http.middlewares.grafana-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.grafana-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.grafana-headers.headers.frameDeny=true
+      - traefik.http.routers.grafana.middlewares=grafana-headers
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    networks:
+      - monitoring
+    expose: ["9100"]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--web.listen-address=:9100'
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    networks:
+      - edge
+      - monitoring
+    expose: ["8080"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    # Security: No privileged mode
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    command:
+      - '--port=8080'
+      - '--housekeeping_interval=30s'
+      - '--max_housekeeping_interval=35s'
+      - '--event_storage_event_limit=default=0'
+      - '--event_storage_age_limit=default=0'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.cadvisor.rule=Host(`cadvisor.automat.it.com`)
+      - traefik.http.services.cadvisor.loadbalancer.server.port=8080
+      # Security headers
+      - traefik.http.middlewares.cadvisor-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.cadvisor-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.cadvisor-headers.headers.frameDeny=true
+      - traefik.http.routers.cadvisor.middlewares=cadvisor-headers
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: Alertmanager for alerts
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    networks:
+      - edge
+      - monitoring
+    expose: ["9093"]
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=https://alerts.automat.it.com'
+      - '--web.listen-address=:9093'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.alertmanager.rule=Host(`alerts.automat.it.com`)
+      - traefik.http.services.alertmanager.loadbalancer.server.port=9093
+      # Security headers
+      - traefik.http.middlewares.alertmanager-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.alertmanager-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.alertmanager-headers.headers.frameDeny=true
+      - traefik.http.routers.alertmanager.middlewares=alertmanager-headers
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  prometheus_data:
+    name: monitoring_prometheus_data
+  grafana_data:
+    name: monitoring_grafana_data
+  alertmanager_data:
+    name: monitoring_alertmanager_data

@@ -1,0 +1,48 @@
+networks:
+  ai-internal:
+    external: true
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: {{NAME}}
+    restart: unless-stopped
+    networks:
+      - ai-internal
+    expose: ["5432"]
+    environment:
+      - POSTGRES_DB={{DB_NAME}}
+      - POSTGRES_USER={{DB_USER}}
+      - POSTGRES_PASSWORD={{DB_PASSWORD}}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+      # Performance settings
+      - POSTGRES_SHARED_PRELOAD_LIBRARIES=pg_stat_statements
+      - POSTGRES_MAX_CONNECTIONS=100
+      - POSTGRES_SHARED_BUFFERS=256MB
+      - POSTGRES_EFFECTIVE_CACHE_SIZE=1GB
+    volumes:
+      - {{NAME}}_data:/var/lib/postgresql/data
+      - {{NAME}}_backups:/var/lib/postgresql/backups
+    labels:
+      - traefik.enable=false  # Database should not be exposed via HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{DB_USER}} -d {{DB_NAME}}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+
+volumes:
+  {{NAME}}_data:
+    name: {{NAME}}_postgres_data
+  {{NAME}}_backups:
+    name: {{NAME}}_postgres_backups

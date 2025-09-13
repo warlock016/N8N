@@ -1,0 +1,56 @@
+networks:
+  ai-internal:
+    external: true
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: {{NAME}}
+    restart: unless-stopped
+    networks:
+      - ai-internal
+    expose: ["11434"]
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_MODELS=/root/.ollama/models
+      # Performance settings  
+      - OLLAMA_NUM_THREADS=16
+      - OMP_NUM_THREADS=16
+      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_FLASH_ATTENTION=true
+    volumes:
+      - {{NAME}}_models:/root/.ollama
+    labels:
+      - traefik.enable=false  # Ollama should only be accessible internally
+    healthcheck:
+      test: ["CMD", "sh", "-c", "pgrep ollama > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Model initialization service
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: {{NAME}}-init
+    networks:
+      - ai-internal
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama to be ready...' &&
+        sleep 30 &&
+        echo 'Pulling default models...' &&
+        curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"llama3.2:1b\"}' && curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text:latest\"}' &&
+        echo 'Model initialization completed!'
+      "
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  {{NAME}}_models:
+    name: {{NAME}}_ollama_models

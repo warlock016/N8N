@@ -1,0 +1,15 @@
+# Minimal token-based configuration
+# Note: Tunnel ID and ingress rules are now managed via Cloudflare dashboard
+# This file can be empty when using token authentication
+
+# Force IPv4 to avoid connectivity issues
+edge-ip-version: 4
+
+# Basic ingress for Traefik routing
+ingress:
+  # Route all traffic through Traefik
+  - hostname: "*.automat.it.com"
+    service: http://traefik:80
+  
+  # Catch-all
+  - service: http_status:404
