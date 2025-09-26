@@ -64,11 +64,11 @@ services:
       # Security headers middleware
       - traefik.http.middlewares.{{NAME}}-headers.headers.stsSeconds=31536000
       - traefik.http.middlewares.{{NAME}}-headers.headers.contentTypeNosniff=true
-      - traefik.http.middlewares.{{NAME}}-headers.headers.frameDeny=true
+      - traefik.http.middlewares.{{NAME}}-headers.headers.customFrameOptionsValue=SAMEORIGIN
       - traefik.http.middlewares.{{NAME}}-headers.headers.browserXssFilter=true
       - traefik.http.middlewares.{{NAME}}-headers.headers.stsIncludeSubdomains=true
       - traefik.http.middlewares.{{NAME}}-headers.headers.stsPreload=true
-      - "traefik.http.middlewares.{{NAME}}-headers.headers.contentSecurityPolicy=default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss: ws:; font-src 'self' https:;"
+      - "traefik.http.middlewares.{{NAME}}-headers.headers.contentSecurityPolicy=default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss: ws:; font-src 'self' https:; frame-ancestors 'self';"
       
       # Apply middleware chain
       - traefik.http.routers.{{NAME}}.middlewares={{NAME}}-headers

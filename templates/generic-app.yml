@@ -17,6 +17,6 @@ services:
       # Optional security headers
       - traefik.http.middlewares.{{NAME}}-headers.headers.stsSeconds=31536000
       - traefik.http.middlewares.{{NAME}}-headers.headers.contentTypeNosniff=true
-      - traefik.http.middlewares.{{NAME}}-headers.headers.frameDeny=true
+      - traefik.http.middlewares.{{NAME}}-headers.headers.customFrameOptionsValue=SAMEORIGIN
       - traefik.http.routers.{{NAME}}.middlewares={{NAME}}-headers
     # Add environment variables, volumes, and healthcheck as needed
