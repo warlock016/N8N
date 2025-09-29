@@ -35,6 +35,9 @@ DISCORD_WEBHOOK_URL=<your-discord-webhook>
 ```bash
 # Set in repository variables
 DEPLOYMENT_URL=https://n8n-prod.example.com
+
+# Repository Secrets (Required):
+DOMAIN_NAME=example.com                    # Your domain name
 ```
 
 ### 2. SSH Key Setup

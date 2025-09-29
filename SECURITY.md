@@ -13,9 +13,10 @@ The following secrets must be configured in your GitHub repository settings:
 1. **CLOUDFLARE_TUNNEL_CREDENTIALS** - Complete Cloudflare tunnel credentials JSON
 2. **CLOUDFLARE_API_TOKEN** - Cloudflare API token with DNS:Edit permissions
 3. **CLOUDFLARE_TUNNEL_ID** - Tunnel ID for the Cloudflare tunnel
-4. **VPS_SSH_KEY** - SSH private key for VPS access
-5. **PRODUCTION_VPS_HOST** - Production VPS hostname/IP
-6. **STAGING_VPS_HOST** - Staging VPS hostname/IP (optional)
+4. **DOMAIN_NAME** - Your domain name (e.g., example.com)
+5. **VPS_SSH_KEY** - SSH private key for VPS access
+6. **PRODUCTION_VPS_HOST** - Production VPS hostname/IP
+7. **STAGING_VPS_HOST** - Staging VPS hostname/IP (optional)
 
 ### Setting up Secrets
 
@@ -81,13 +82,22 @@ The deployment workflow:
 
 ### Environment Variables
 
-When running scripts locally, use environment variables:
+When running scripts locally, use environment variables or the `.env` file:
 
 ```bash
+# Option 1: Export environment variables
 export CLOUDFLARE_API_TOKEN="your_token_here"
 export CLOUDFLARE_TUNNEL_ID="your_tunnel_id_here"
-./scripts/cloudflare-dns-api.sh update your-domain.com
+export DOMAIN_NAME="your-domain.com"
+./scripts/cloudflare-dns-api.sh update subdomain
+
+# Option 2: Use .env file (recommended)
+cp env.example .env
+# Edit .env with your actual values
+./scripts/svc init
 ```
+
+**Important**: Never commit your `.env` file to the repository. It contains sensitive credentials.
 
 ## Monitoring and Alerts
 

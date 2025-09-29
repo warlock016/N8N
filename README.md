@@ -2,31 +2,88 @@
 
 A production-ready, low-ops blueprint for hosting multiple independent Docker services (N8N instances, AI services, databases, custom apps) on one VPS using Traefik reverse proxy and CloudFlare tunnel.
 
+> 📖 **New to this repository?** See the [Configuration Guide](docs/CONFIGURATION_GUIDE.md) for detailed setup instructions.
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 - VPS with Docker and Docker Compose v2
 - Domain on CloudFlare
 - CloudFlare Tunnel setup (get TUNNEL_ID and credentials)
+- GitHub repository with configured secrets (for automated deployment)
 
-### 1. Install Dependencies
+### 1. Initial Configuration
+
+After cloning this repository, you need to configure it for your environment:
+
+#### Local Environment Setup
 ```bash
+# Install dependencies
 pip3 install -r requirements.txt
+
+# Create your environment configuration
+cp env.example .env
 ```
 
-### 2. Configure CloudFlare Tunnel
+#### Configure `.env` file
+Edit `.env` with your actual values:
 ```bash
-# Replace placeholders in edge/cloudflared/config.yml
-export TUNNEL_ID=your_tunnel_id
-export DOMAIN=example.com
-envsubst < edge/cloudflared/config.yml > edge/cloudflared/config.yml.tmp \
-  && mv edge/cloudflared/config.yml.tmp edge/cloudflared/config.yml
+# Domain Name Configuration
+DOMAIN_NAME=your-domain.com
 
-# Place your tunnel credentials file:
-# edge/cloudflared/${TUNNEL_ID}.json
+# Cloudflare Zero Trust Tunnel Configuration & Credentials
+CLOUDFLARE_TOKEN=your_cloudflare_api_token
+ACCOUNT_TAG=your_account_tag
+TUNNEL_SECRET=your_tunnel_secret
+TUNNEL_ID=your_tunnel_id
 ```
 
-### 3. Deploy Edge Stack
+### 2. GitHub Repository Setup (For Automated Deployment)
+
+Configure these secrets in your GitHub repository (`Settings > Secrets and variables > Actions`):
+
+#### Required Secrets:
+```bash
+# VPS Connection
+VPS_SSH_KEY=<your-private-ssh-key-content>
+PRODUCTION_VPS_HOST=your.vps.ip.address
+STAGING_VPS_HOST=your.vps.ip.address    # Same or different VPS
+
+# CloudFlare Configuration
+CLOUDFLARE_API_TOKEN=<your-cloudflare-api-token>
+CLOUDFLARE_TUNNEL_CREDENTIALS=<tunnel-credentials-json-content>
+CLOUDFLARE_TUNNEL_ID=<your-tunnel-id>
+DOMAIN_NAME=your-domain.com
+
+# Optional: Notification webhooks
+SLACK_WEBHOOK_URL=<your-slack-webhook>
+DISCORD_WEBHOOK_URL=<your-discord-webhook>
+```
+
+#### SSH Key Setup:
+```bash
+# Generate SSH key pair for GitHub Actions
+ssh-keygen -t rsa -b 4096 -C "github-actions@yourdomain.com" -f ~/.ssh/github-actions
+
+# Copy public key to your VPS
+ssh-copy-id -i ~/.ssh/github-actions.pub root@your-vps-ip
+
+# Add private key content to VPS_SSH_KEY secret in GitHub
+cat ~/.ssh/github-actions
+```
+
+### 3. CloudFlare Tunnel Setup
+
+The configuration files now use environment variables. Your CloudFlare tunnel config will automatically use your domain:
+
+```yaml
+# edge/cloudflared/config.yml uses ${DOMAIN_NAME}
+ingress:
+  - hostname: "*.${DOMAIN_NAME}"
+    service: http://traefik:80
+```
+
+### 4. Deploy Edge Stack
 ```bash
 # Initialize the project
 ./scripts/svc init
