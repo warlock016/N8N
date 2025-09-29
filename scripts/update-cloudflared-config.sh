@@ -69,12 +69,12 @@ warp-routing:
 
 # Wildcard routing - routes all subdomains to Traefik for intelligent routing
 ingress:
-  # Route all *.example.com subdomains to Traefik
-  - hostname: "*.example.com"
+  # Route all *.${DOMAIN_NAME} subdomains to Traefik
+  - hostname: "*.${DOMAIN_NAME}"
     service: http://traefik:80
     originRequest:
       noTLSVerify: true
-      httpHostHeader: "*.example.com"
+      httpHostHeader: "*.${DOMAIN_NAME}"
   
   # Catch-all for unmatched hostnames
   - service: http_status:404

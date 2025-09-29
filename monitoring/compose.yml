@@ -30,10 +30,10 @@ services:
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
       - '--web.listen-address=:9090'
-      - '--web.external-url=https://prometheus.example.com'
+      - '--web.external-url=https://prometheus.${DOMAIN_NAME}'
     labels:
       - traefik.enable=true
-      - traefik.http.routers.prometheus.rule=Host(`prometheus.example.com`)
+      - traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN_NAME}`)
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
       # Security headers
       - traefik.http.middlewares.prometheus-headers.headers.stsSeconds=31536000
@@ -61,7 +61,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
-      - GF_SERVER_ROOT_URL=https://grafana.example.com
+      - GF_SERVER_ROOT_URL=https://grafana.${DOMAIN_NAME}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
       # Security settings
       - GF_SECURITY_COOKIE_SECURE=true
@@ -71,7 +71,7 @@ services:
       - GF_SECURITY_X_XSS_PROTECTION=true
     labels:
       - traefik.enable=true
-      - traefik.http.routers.grafana.rule=Host(`grafana.example.com`)
+      - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN_NAME}`)
       - traefik.http.services.grafana.loadbalancer.server.port=3000
       # Security headers
       - traefik.http.middlewares.grafana-headers.headers.stsSeconds=31536000
@@ -140,7 +140,7 @@ services:
       - '--event_storage_age_limit=default=0'
     labels:
       - traefik.enable=true
-      - traefik.http.routers.cadvisor.rule=Host(`cadvisor.example.com`)
+      - traefik.http.routers.cadvisor.rule=Host(`cadvisor.${DOMAIN_NAME}`)
       - traefik.http.services.cadvisor.loadbalancer.server.port=8080
       # Security headers
       - traefik.http.middlewares.cadvisor-headers.headers.stsSeconds=31536000
@@ -172,11 +172,11 @@ services:
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
-      - '--web.external-url=https://alerts.example.com'
+      - '--web.external-url=https://alerts.${DOMAIN_NAME}'
       - '--web.listen-address=:9093'
     labels:
       - traefik.enable=true
-      - traefik.http.routers.alertmanager.rule=Host(`alerts.example.com`)
+      - traefik.http.routers.alertmanager.rule=Host(`alerts.${DOMAIN_NAME}`)
       - traefik.http.services.alertmanager.loadbalancer.server.port=9093
       # Security headers
       - traefik.http.middlewares.alertmanager-headers.headers.stsSeconds=31536000

@@ -30,14 +30,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
-      # Traefik dashboard at traefik.example.com
+      # Traefik dashboard at traefik.${DOMAIN_NAME}
       - traefik.enable=true
-      - traefik.http.routers.traefik.rule=Host(`traefik.example.com`)
+      - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN_NAME}`)
       - traefik.http.routers.traefik.service=api@internal
       - traefik.http.routers.traefik.entrypoints=web
       # Metrics endpoint
       - >
-        traefik.http.routers.metrics.rule=Host(`traefik.example.com`) &&
+        traefik.http.routers.metrics.rule=Host(`traefik.${DOMAIN_NAME}`) &&
         Path(`/metrics`)
       - traefik.http.routers.metrics.service=prometheus@internal
       - traefik.http.routers.metrics.entrypoints=metrics

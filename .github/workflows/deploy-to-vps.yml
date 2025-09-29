@@ -143,6 +143,9 @@ jobs:
           # Create CloudFlare credentials from GitHub secret
           mkdir -p deploy-package/edge/cloudflared
           echo '${{ secrets.CLOUDFLARE_TUNNEL_CREDENTIALS }}' > deploy-package/edge/cloudflared/${{ secrets.CLOUDFLARE_TUNNEL_ID }}.json
+
+          # Create .env file for domain configuration
+          echo "DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}" > deploy-package/.env
           
           # Create deployment info
           cat > deploy-package/deployment-info.json << EOF
