@@ -146,7 +146,13 @@ jobs:
 
           # Create .env file for domain configuration
           echo "DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}" > deploy-package/.env
-          
+
+          # Substitute environment variables in configuration files
+          # Note: Docker Compose only expands variables in compose.yml, not in mounted config files
+          # Therefore, we must substitute variables at deployment time to avoid storing sensitive data in repo
+          sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/cloudflared/config.yml
+          sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/compose.yml
+
           # Create deployment info
           cat > deploy-package/deployment-info.json << EOF
           {
