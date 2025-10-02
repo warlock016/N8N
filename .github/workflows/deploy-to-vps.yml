@@ -152,6 +152,7 @@ jobs:
           # Therefore, we must substitute variables at deployment time to avoid storing sensitive data in repo
           sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/cloudflared/config.yml
           sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/compose.yml
+          sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/monitoring/compose.yml
 
           # Create deployment info
           cat > deploy-package/deployment-info.json << EOF
