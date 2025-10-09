@@ -57,9 +57,9 @@ scrape_configs:
       - source_labels: [__meta_docker_container_name]
         target_label: instance
         regex: '/?(.*)'
-      # Only keep containers on the edge network (172.18.x.x)
-      - source_labels: [__meta_docker_network_ip]
-        regex: '172\.18\..*'
+      # Only keep containers on the edge or monitoring networks
+      - source_labels: [__meta_docker_network_name]
+        regex: '(edge|monitoring)'
         action: keep
       # Construct address from edge network IP and prometheus.io/port label
       - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_prometheus_io_port]
