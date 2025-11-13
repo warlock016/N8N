@@ -1,3 +1,5 @@
+name: edge
+
 networks:
   edge:
     external: true
@@ -33,7 +35,6 @@ services:
       # Enable Docker provider with edge network
       - --providers.docker.network=edge
       # Connection settings for better reliability
-      - --providers.docker.swarmMode=false
       - --providers.docker.allowEmptyServices=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
