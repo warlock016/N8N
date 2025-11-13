@@ -537,6 +537,208 @@ docker exec service-name n8n --version
 docker exec service-name ls -la /home/node/.n8n/
 ```
 
+### System-Wide Container Updates and Cleanup
+
+#### Updating All Containers to Latest Versions
+
+To ensure all containers across your deployment are running the latest versions:
+
+```bash
+# Update all containers in a specific service
+cd /opt/n8n-v2/shared/services/service-name
+docker compose -f compose.yml pull
+docker compose -f compose.yml up -d --force-recreate
+
+# Update monitoring stack
+cd /opt/n8n-v2/shared/monitoring
+docker compose -f compose.yml pull
+docker compose -f compose.yml up -d --force-recreate
+
+# Update edge stack (Traefik + CloudFlared)
+cd /opt/n8n-v2/shared/edge
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d --force-recreate
+```
+
+**Automated Update All Services**:
+```bash
+# Update all services using the management CLI
+for service in /opt/n8n-v2/shared/services/*/; do
+    service_name=$(basename "$service")
+    echo "Updating $service_name..."
+    ./scripts/svc deploy "$service_name"
+done
+```
+
+#### Docker Cleanup and Maintenance
+
+**Check Current Disk Usage**:
+```bash
+# View disk usage summary
+docker system df
+
+# View detailed image information
+docker images --all
+
+# View container sizes
+docker ps -as
+```
+
+**Clean Up Dangling Images** (safe - removes only unused images):
+```bash
+# Remove dangling images (untagged images)
+docker image prune -f
+
+# Expected output: Reclaimed space from unused images
+```
+
+**Aggressive Cleanup** (removes all unused Docker resources):
+```bash
+# Remove all unused images, containers, networks (preserves volumes)
+docker system prune -af --volumes=false
+
+# Expected reclaim: ~10-15GB on active systems
+```
+
+**Complete Cleanup** (⚠️ use with caution - includes volumes):
+```bash
+# Remove everything unused INCLUDING VOLUMES
+# WARNING: This will delete unused volume data
+docker system prune -af --volumes
+```
+
+**Clean Up Specific Resources**:
+```bash
+# Remove unused volumes only
+docker volume prune -f
+
+# Remove stopped containers only
+docker container prune -f
+
+# Remove unused networks only
+docker network prune -f
+
+# Remove dangling build cache
+docker builder prune -f
+```
+
+#### Maintenance Best Practices
+
+**1. Regular Cleanup Schedule**:
+```bash
+# Add to crontab for weekly cleanup (Sundays at 2 AM)
+0 2 * * 0 /usr/bin/docker system prune -af --volumes=false > /var/log/docker-cleanup.log 2>&1
+```
+
+**2. Pre-Update Cleanup**:
+```bash
+# Clean up before pulling new images to free space
+docker image prune -f
+docker builder prune -f
+
+# Then update
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+**3. Monitor Disk Usage**:
+```bash
+# Check before cleanup
+docker system df
+
+# Perform cleanup
+docker system prune -af --volumes=false
+
+# Check after cleanup to verify reclaimed space
+docker system df
+```
+
+**4. Keep Only Active Images**:
+```bash
+# Remove all images not associated with running containers
+docker image prune -a -f
+
+# This keeps only images currently in use
+```
+
+#### Example Maintenance Workflow
+
+**Monthly Maintenance Routine**:
+```bash
+#!/bin/bash
+# Monthly Docker maintenance script
+
+echo "=== Docker Maintenance Started ==="
+
+# 1. Check current usage
+echo "Current disk usage:"
+docker system df
+
+# 2. Clean dangling images
+echo "Removing dangling images..."
+docker image prune -f
+
+# 3. Update all services to latest
+echo "Updating all services..."
+cd /opt/n8n-v2/shared/edge
+docker compose pull && docker compose up -d --force-recreate
+
+cd /opt/n8n-v2/shared/monitoring
+docker compose pull && docker compose up -d --force-recreate
+
+for service in /opt/n8n-v2/shared/services/*/; do
+    cd "$service"
+    docker compose pull && docker compose up -d --force-recreate
+done
+
+# 4. Aggressive cleanup (excluding volumes)
+echo "Performing aggressive cleanup..."
+docker system prune -af --volumes=false
+
+# 5. Check final usage
+echo "Final disk usage:"
+docker system df
+
+echo "=== Maintenance Completed ==="
+```
+
+Save as `/opt/n8n-v2/shared/scripts/maintenance.sh` and run monthly.
+
+#### Troubleshooting Cleanup Issues
+
+**"No space left on device" error**:
+```bash
+# Emergency cleanup to free space immediately
+docker system prune -af --volumes=false
+docker volume prune -f
+
+# Check available space
+df -h
+```
+
+**Images won't delete**:
+```bash
+# Force remove specific image
+docker rmi -f <image_id>
+
+# Stop all containers and remove all images
+docker stop $(docker ps -aq)
+docker rm $(docker ps -aq)
+docker rmi -f $(docker images -q)
+```
+
+**Verify cleanup safety**:
+```bash
+# List volumes before pruning
+docker volume ls
+
+# Check what will be removed (dry run)
+docker system prune -af --volumes=false --dry-run
+
+# List running containers to ensure they're not affected
+docker ps
+```
+
 ## 📋 Available Templates
 
 The service management CLI supports multiple templates for different use cases:
@@ -715,6 +917,96 @@ ufw enable
 ## 🚨 Troubleshooting
 
 ### Common Issues
+
+**Service returns 404 after update (requires Traefik restart)**:
+
+This is a common issue where Traefik doesn't detect service updates automatically. After updating any service, you might need to restart Traefik.
+
+**Why this happens:**
+1. **Missed Docker events**: When containers are recreated, Traefik relies on Docker events to detect changes. Under load or during simultaneous updates, these events can be missed.
+2. **IP address changes**: Recreated containers get new internal IP addresses, but Traefik's routing table might still point to old IPs.
+3. **Stale configuration cache**: Traefik caches backend service information, and this cache doesn't always refresh on container recreation.
+4. **Timing issues**: Services might restart faster than Traefik can detect the change.
+
+**Immediate Fix:**
+```bash
+# Quick fix - restart Traefik to force configuration reload
+docker restart edge-traefik-1
+
+# Or restart entire edge stack
+./scripts/svc edge restart
+```
+
+**Permanent Solution (already implemented):**
+
+Your Traefik configuration has been updated with:
+```yaml
+# These settings ensure Traefik detects service changes reliably
+- --providers.docker.watch=true           # Enable event watching
+- --providers.docker.pollinterval=10s     # Poll Docker API every 10s as backup
+- --providers.docker.refreshseconds=15    # Refresh configuration every 15s
+```
+
+After deploying this update, Traefik will:
+- Watch Docker events in real-time
+- Poll Docker API every 10 seconds as a fallback
+- Refresh its configuration every 15 seconds
+- Automatically detect service IP changes
+
+**Deploy the fix:**
+```bash
+# Update Traefik with new configuration
+cd /opt/n8n-v2/shared/edge
+docker compose pull
+docker compose up -d --force-recreate
+
+# Verify Traefik is watching correctly
+docker logs edge-traefik-1 2>&1 | grep -i "provider.docker"
+```
+
+**Alternative: Automated Traefik Restart**
+
+If you still experience issues, add a post-update hook:
+```bash
+#!/bin/bash
+# /opt/n8n-v2/shared/scripts/post-service-update.sh
+
+SERVICE_NAME=$1
+
+echo "Service $SERVICE_NAME updated, checking Traefik..."
+
+# Give service time to start
+sleep 5
+
+# Test if service is accessible
+if ! curl -s -o /dev/null -w "%{http_code}" https://your-service-domain.com | grep -q "200\|301\|302"; then
+    echo "Service not accessible, restarting Traefik..."
+    docker restart edge-traefik-1
+    sleep 5
+    echo "Traefik restarted"
+fi
+```
+
+**Monitoring Traefik Configuration Updates:**
+```bash
+# Watch Traefik logs during service updates
+docker logs -f edge-traefik-1
+
+# Look for these messages:
+# - "Configuration received from provider docker"
+# - "Creating service" or "Updating service"
+# - "Server status changed"
+
+# Check current routing configuration
+curl -s http://localhost:8080/api/http/routers | jq '.'
+```
+
+**Prevention Best Practices:**
+1. **Update edge stack first**: Always ensure Traefik is on the latest version
+2. **One service at a time**: Update services sequentially, not in parallel
+3. **Monitor during updates**: Watch Traefik logs during service updates
+4. **Health checks**: Ensure services have proper health checks configured
+5. **Grace periods**: Wait 10-15 seconds between service updates
 
 **Service not accessible**:
 ```bash

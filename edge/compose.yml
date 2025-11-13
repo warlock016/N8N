@@ -11,6 +11,11 @@ services:
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      # Docker provider watch configuration (critical for dynamic updates)
+      - --providers.docker.watch=true
+      - --providers.docker.pollinterval=10s
+      - --providers.docker.refreshseconds=15
+      # Entrypoints
       - --entryPoints.web.address=:80
       - --entryPoints.metrics.address=:8082
       - --entryPoints.ping.address=:8081
@@ -25,8 +30,11 @@ services:
       # Enable ping endpoint
       - --ping=true
       - --ping.entryPoint=ping
-      # Enable Docker provider
+      # Enable Docker provider with edge network
       - --providers.docker.network=edge
+      # Connection settings for better reliability
+      - --providers.docker.swarmMode=false
+      - --providers.docker.allowEmptyServices=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
