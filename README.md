@@ -942,16 +942,16 @@ docker restart edge-traefik-1
 Your Traefik configuration has been updated with:
 ```yaml
 # These settings ensure Traefik detects service changes reliably
-- --providers.docker.watch=true           # Enable event watching
-- --providers.docker.pollinterval=10s     # Poll Docker API every 10s as backup
-- --providers.docker.refreshseconds=15    # Refresh configuration every 15s
+- --providers.docker.watch=true                    # Enable Docker event watching
+- --providers.docker.httpClientTimeout=32          # Docker API timeout (seconds)
+- --providers.providersThrottleDuration=10s        # Throttle rapid config changes
 ```
 
 After deploying this update, Traefik will:
-- Watch Docker events in real-time
-- Poll Docker API every 10 seconds as a fallback
-- Refresh its configuration every 15 seconds
-- Automatically detect service IP changes
+- Watch Docker events in real-time for container changes
+- Maintain reliable Docker API connections with proper timeouts
+- Throttle configuration reloads (only processes the latest change if multiple occur within 10s)
+- Automatically detect service IP changes and routing updates
 
 **Deploy the fix:**
 ```bash

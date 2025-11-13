@@ -11,17 +11,20 @@ services:
     networks: [edge]
     # No host ports; traffic arrives via cloudflared inside the network
     command:
+      # Docker Provider Configuration
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      # Docker provider watch configuration (critical for dynamic updates)
       - --providers.docker.watch=true
-      - --providers.docker.pollinterval=10s
-      - --providers.docker.refreshseconds=15
+      - --providers.docker.network=edge
+      - --providers.docker.httpClientTimeout=32
+      - --providers.docker.allowEmptyServices=false
+      # Provider throttle to handle rapid config changes
+      - --providers.providersThrottleDuration=10s
       # Entrypoints
       - --entryPoints.web.address=:80
       - --entryPoints.metrics.address=:8082
       - --entryPoints.ping.address=:8081
-      # Enable dashboard on / (protect with CF Access)
+      # API & Dashboard
       - --api.dashboard=true
       # Prometheus metrics
       - --metrics.prometheus=true
@@ -29,13 +32,9 @@ services:
       # Logging
       - --log.level=INFO
       - --accesslog=true
-      # Enable ping endpoint
+      # Health check endpoint
       - --ping=true
       - --ping.entryPoint=ping
-      # Enable Docker provider with edge network
-      - --providers.docker.network=edge
-      # Connection settings for better reliability
-      - --providers.docker.allowEmptyServices=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
