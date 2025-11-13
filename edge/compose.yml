@@ -16,7 +16,6 @@ services:
       - --providers.docker.exposedbydefault=false
       - --providers.docker.watch=true
       - --providers.docker.network=edge
-      - --providers.docker.httpClientTimeout=32
       - --providers.docker.allowEmptyServices=false
       # Provider throttle to handle rapid config changes
       - --providers.providersThrottleDuration=10s

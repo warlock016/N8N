@@ -943,13 +943,12 @@ Your Traefik configuration has been updated with:
 ```yaml
 # These settings ensure Traefik detects service changes reliably
 - --providers.docker.watch=true                    # Enable Docker event watching
-- --providers.docker.httpClientTimeout=32          # Docker API timeout (seconds)
 - --providers.providersThrottleDuration=10s        # Throttle rapid config changes
 ```
 
 After deploying this update, Traefik will:
 - Watch Docker events in real-time for container changes
-- Maintain reliable Docker API connections with proper timeouts
+- Use unlimited timeout for Docker API connections (default behavior, suitable for systems with many containers)
 - Throttle configuration reloads (only processes the latest change if multiple occur within 10s)
 - Automatically detect service IP changes and routing updates
 
@@ -1007,6 +1006,37 @@ curl -s http://localhost:8080/api/http/routers | jq '.'
 3. **Monitor during updates**: Watch Traefik logs during service updates
 4. **Health checks**: Ensure services have proper health checks configured
 5. **Grace periods**: Wait 10-15 seconds between service updates
+
+**Traefik Docker API timeout errors**:
+
+If you see errors like `"context deadline exceeded"` or `"Client.Timeout"` in Traefik logs:
+
+```bash
+# Error example:
+# ERR Provider error, retrying error="context deadline exceeded (Client.Timeout)"
+```
+
+**Causes:**
+- Docker API taking too long to respond (many containers)
+- Docker daemon under heavy load
+- `httpClientTimeout` set too low
+
+**Solution:**
+```bash
+# The default configuration uses no timeout (recommended)
+# If you added httpClientTimeout, remove it from edge/compose.yml
+
+# Verify Docker daemon is healthy
+docker info
+
+# Check Docker daemon load
+docker stats --no-stream
+
+# Restart Docker daemon if needed (as last resort)
+sudo systemctl restart docker
+sleep 10
+docker compose -f /opt/n8n-v2/shared/edge/compose.yml up -d
+```
 
 **Service not accessible**:
 ```bash
