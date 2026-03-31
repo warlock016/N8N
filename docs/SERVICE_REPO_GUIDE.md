@@ -6,7 +6,7 @@ Each service deploys independently from its own GitHub repository. This guide co
 
 - The platform repo (this repo) is deployed and the edge stack (Traefik + Cloudflared) is running
 - A DNS CNAME record pointing `<subdomain>.your-domain.com` to the CloudFlare tunnel (for web-facing services)
-- `VPS_SSH_KEY` and `VPS_HOST` configured as GitHub secrets in the service repo
+- `VPS_SSH_KEY` and `PRODUCTION_VPS_HOST` configured as GitHub secrets in the service repo
 
 ## Repo Structure
 
@@ -145,13 +145,13 @@ jobs:
       service_name: my-service
     secrets:
       VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_HOST: ${{ secrets.PRODUCTION_VPS_HOST }}
 ```
 
 ## First-time setup
 
 1. Create the service repo with the structure above
-2. Add GitHub secrets: `VPS_SSH_KEY` and `VPS_HOST` (same values as the platform repo)
+2. Add GitHub secrets: `VPS_SSH_KEY` and `PRODUCTION_VPS_HOST` (same values as the platform repo)
 3. Create the `.env` file on the VPS:
    ```bash
    ssh hetzner
