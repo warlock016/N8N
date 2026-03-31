@@ -1,0 +1,105 @@
+name: Deploy Service to VPS
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+        description: "Service name (used as docker compose project name and directory name)"
+      compose_file:
+        required: false
+        type: string
+        default: "compose.yml"
+        description: "Path to compose file in the service repo"
+      environment:
+        required: false
+        type: string
+        default: "staging"
+        description: "Deployment environment (staging or production)"
+    secrets:
+      VPS_SSH_KEY:
+        required: true
+      VPS_HOST:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy ${{ inputs.service_name }}
+
+    steps:
+      - name: Checkout service repo
+        uses: actions/checkout@v4
+
+      - name: Set deployment variables
+        id: vars
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            echo "deploy_path=/opt/n8n-production" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy service files to VPS
+        run: |
+          SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
+
+          # Ensure service directory exists on VPS
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} "mkdir -p $SERVICE_DIR"
+
+          # Sync service files, preserving .env on VPS
+          rsync -av -e "ssh -i ~/.ssh/id_rsa" \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='README.md' \
+            --exclude='.gitignore' \
+            --exclude='__pycache__/' \
+            --exclude='.DS_Store' \
+            . root@${{ secrets.VPS_HOST }}:$SERVICE_DIR/
+
+      - name: Deploy service
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} << EOF
+            set -euo pipefail
+            SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
+            cd "\$SERVICE_DIR"
+
+            echo "Pulling images for ${{ inputs.service_name }}..."
+            docker compose -f ${{ inputs.compose_file }} -p ${{ inputs.service_name }} pull
+
+            echo "Deploying ${{ inputs.service_name }}..."
+            docker compose -f ${{ inputs.compose_file }} -p ${{ inputs.service_name }} up -d --remove-orphans
+
+            echo "Service status:"
+            docker compose -f ${{ inputs.compose_file }} -p ${{ inputs.service_name }} ps
+          EOF
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} << EOF
+            set -euo pipefail
+            SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
+            cd "\$SERVICE_DIR"
+
+            # Wait for containers to settle
+            sleep 5
+
+            # Check for unhealthy containers
+            UNHEALTHY=\$(docker compose -f ${{ inputs.compose_file }} -p ${{ inputs.service_name }} ps --format json | grep -c '"Health":"unhealthy"' || true)
+            if [ "\$UNHEALTHY" -gt 0 ]; then
+              echo "WARNING: \$UNHEALTHY unhealthy container(s) detected"
+              docker compose -f ${{ inputs.compose_file }} -p ${{ inputs.service_name }} ps
+              exit 1
+            fi
+
+            echo "All containers healthy for ${{ inputs.service_name }}"
+          EOF

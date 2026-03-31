@@ -26,6 +26,13 @@ SERVICES_DIR = PROJECT_ROOT / "services"
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 EDGE_DIR = PROJECT_ROOT / "edge"
 
+def get_services_dir() -> Path:
+    """Return the services directory, preferring the shared path on VPS."""
+    shared = Path("/opt/n8n-v2/shared/services")
+    if shared.exists():
+        return shared
+    return SERVICES_DIR
+
 def generate_password(length: int = 32) -> str:
     """Generate a secure random password."""
     alphabet = string.ascii_letters + string.digits + "!@#%^&*"
@@ -62,12 +69,7 @@ def new(
 ):
     """Create a new service in shared/services when deployed, local for development."""
 
-    # Use shared/services path when deployed, local for development
-    shared_services = Path("/opt/n8n-v2/shared/services")
-    if shared_services.exists():
-        service_dir = shared_services / name
-    else:
-        service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     template_file = TEMPLATES_DIR / f"{template}.yml"
     
     if service_dir.exists():
@@ -191,12 +193,7 @@ def deploy(
     pull: bool = typer.Option(True, "--pull/--no-pull", help="Pull latest images before deploy")
 ):
     """Deploy a service with stable project name."""
-    # Look in shared/services when deployed
-    shared_services = Path("/opt/n8n-v2/shared/services")
-    if shared_services.exists():
-        service_dir = shared_services / name
-    else:
-        service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     
     if not service_dir.exists():
         console.print(f"[red]Service {name} not found![/red]")
@@ -236,7 +233,7 @@ def remove(
     force: bool = typer.Option(False, "--force", "-f", help="Don't ask for confirmation")
 ):
     """Remove a service."""
-    service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     
     if not service_dir.exists():
         console.print(f"[red]Service {name} not found![/red]")
@@ -271,11 +268,12 @@ def remove(
 @app.command()
 def list():
     """List all services."""
-    if not SERVICES_DIR.exists():
+    services_dir = get_services_dir()
+    if not services_dir.exists():
         console.print("[yellow]No services directory found.[/yellow]")
         return
-    
-    services = [d for d in SERVICES_DIR.iterdir() if d.is_dir()]
+
+    services = [d for d in services_dir.iterdir() if d.is_dir()]
     
     if not services:
         console.print("[yellow]No services found.[/yellow]")
@@ -348,7 +346,7 @@ def info(
     name: str = typer.Argument(..., help="Service name")
 ):
     """Show detailed information about a service."""
-    service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     
     if not service_dir.exists():
         console.print(f"[red]Service {name} not found![/red]")
@@ -395,7 +393,7 @@ def logs(
     tail: int = typer.Option(50, "--tail", "-n", help="Number of lines to show")
 ):
     """Show logs for a service."""
-    service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     
     if not service_dir.exists():
         console.print(f"[red]Service {name} not found![/red]")
@@ -412,7 +410,7 @@ def restart(
     name: str = typer.Argument(..., help="Service name")
 ):
     """Restart a service."""
-    service_dir = SERVICES_DIR / name
+    service_dir = get_services_dir() / name
     
     if not service_dir.exists():
         console.print(f"[red]Service {name} not found![/red]")
