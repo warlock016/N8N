@@ -8,8 +8,10 @@ edge-ip-version: 4
 # Basic ingress for Traefik routing
 ingress:
   # Route all traffic through Traefik
+  - hostname: "${DOMAIN_NAME}"
+    service: http://traefik:80
   - hostname: "*.${DOMAIN_NAME}"
     service: http://traefik:80
-  
+
   # Catch-all
   - service: http_status:404
