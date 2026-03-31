@@ -140,7 +140,7 @@ on:
 
 jobs:
   deploy:
-    uses: warlock016/N8N/.github/workflows/deploy-service.yml@main
+    uses: <your-org>/<platform-repo>/.github/workflows/deploy-service.yml@main
     with:
       service_name: my-service
     secrets:
