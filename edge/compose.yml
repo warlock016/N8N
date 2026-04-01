@@ -16,7 +16,7 @@ services:
       - --providers.docker.exposedbydefault=false
       - --providers.docker.watch=true
       - --providers.docker.network=edge
-      - --providers.docker.allowEmptyServices=false
+      - --providers.docker.allowEmptyServices=true
       # Provider throttle to handle rapid config changes
       - --providers.providersThrottleDuration=10s
       # Entrypoints
