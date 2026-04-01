@@ -298,8 +298,8 @@ jobs:
 
             # Update edge stack with health check
             echo "📡 Updating edge stack..."
-            docker compose -p edge -f edge/compose.yml pull
-            docker compose -p edge -f edge/compose.yml up -d --remove-orphans
+            docker compose -p edge --env-file .env -f edge/compose.yml pull
+            docker compose -p edge --env-file .env -f edge/compose.yml up -d --remove-orphans
 
             # Wait for edge to be healthy
             echo "  Waiting for edge to be ready..."
@@ -431,7 +431,7 @@ jobs:
 
               # Restart only edge and monitoring with stable project names
               cd "\$DEPLOY_PATH/current"
-              docker compose -p edge -f edge/compose.yml up -d --force-recreate
+              docker compose -p edge --env-file .env -f edge/compose.yml up -d --force-recreate
               docker compose -p monitoring -f monitoring/compose.yml up -d --force-recreate
 
               echo "✅ Rolled back to \$PREV"
