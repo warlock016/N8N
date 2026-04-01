@@ -1,16 +1,71 @@
 groups:
   - name: security
     rules:
-      # SSH brute-force detection via node-exporter login metrics
-      - alert: HighSSHLoginFailures
-        expr: increase(node_logind_sessions_active[5m]) == 0 and increase(node_systemd_unit_state{name="ssh.service",state="active"}[5m]) > 0
+      # fail2ban is down
+      - alert: Fail2BanDown
+        expr: fail2ban_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "fail2ban is not running"
+          description: "fail2ban service is down — SSH brute-force protection is disabled."
+
+      # Spike in SSH brute-force attempts
+      - alert: SSHBruteForceSpike
+        expr: ssh_failed_attempts_last_hour > 200
         for: 0m
         labels:
           severity: warning
           category: security
         annotations:
-          summary: "Possible SSH brute-force activity"
-          description: "SSH service is active but no successful logins detected — may indicate ongoing brute-force attempts."
+          summary: "SSH brute-force spike: {{ $value }} failed attempts in the last hour"
+          description: "Unusually high number of SSH authentication failures detected."
+
+      # Large-scale attack (many unique IPs)
+      - alert: SSHDistributedAttack
+        expr: ssh_unique_attackers_last_hour > 15
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Distributed SSH attack: {{ $value }} unique attacker IPs in the last hour"
+          description: "Multiple unique IPs are attempting SSH access — possible coordinated attack."
+
+      # Many IPs currently banned
+      - alert: HighBanCount
+        expr: fail2ban_banned_total{jail="sshd"} > 20
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "{{ $value }} IPs currently banned by fail2ban"
+          description: "High number of banned IPs suggests sustained attack activity."
+
+      # Rapid ban rate
+      - alert: RapidBanRate
+        expr: fail2ban_recent_bans > 10
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "{{ $value }} new bans in the last hour"
+          description: "fail2ban is banning IPs at a high rate — active brute-force attack in progress."
+
+      # Recidive jail active (repeat offenders)
+      - alert: RecidiveBansActive
+        expr: fail2ban_banned_total{jail="recidive"} > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "{{ $value }} repeat offender(s) banned by recidive jail"
+          description: "IPs that were banned multiple times have been escalated to 30-day bans."
 
   - name: system
     rules:
