@@ -4,7 +4,7 @@
 
 This document outlines the security posture, known gaps, and remediation plan for the N8N deployment infrastructure. It covers VPS access control, secrets management, container security, network exposure, and operational hardening.
 
-Last audited: 2026-04-01 (remediation completed)
+Last audited: 2026-04-02 (all findings resolved)
 
 ---
 
@@ -23,7 +23,7 @@ Last audited: 2026-04-01 (remediation completed)
 | # | Finding | Status |
 |---|---------|--------|
 | H1 | SSH private key written to CI runner disk without cleanup | Resolved — `if: always()` cleanup step added to all workflows |
-| H2 | CloudFlared metrics bound to `0.0.0.0:2000` (all interfaces) | Resolved — no host ports exposed; `0.0.0.0` only reachable within Docker network |
+| H2 | CloudFlared metrics bound to `0.0.0.0:2000` (all interfaces) | Resolved — container has no host ports; only reachable within Docker network |
 | H3 | CloudFlared running with `--loglevel debug` in production | Resolved — removed debug flag |
 | H4 | Ollama CORS set to `*` (accepts any origin) | Resolved — restricted to internal consumers |
 | H5 | Traefik dashboard exposed without authentication | Resolved — basic auth middleware added (defense-in-depth with Cloudflare Access) |
@@ -115,7 +115,7 @@ With this account you can run `sudo -i` to get a root shell when needed. The dif
 - If your key is compromised, the attacker still needs your sudo password
 - You can disable this account independently without affecting deployments
 
-#### Disable root SSH login
+#### Disable root SSH and password authentication
 
 After both accounts are verified working:
 
@@ -123,11 +123,14 @@ After both accounts are verified working:
 # /etc/ssh/sshd_config
 PermitRootLogin no
 PasswordAuthentication no
+KbdInteractiveAuthentication no
 
-systemctl restart sshd
+systemctl restart ssh
 ```
 
 **Important**: Test SSH access with your personal account in a separate terminal BEFORE closing your current root session.
+
+**Note**: With `PasswordAuthentication no`, SSH brute-force attacks are immediately rejected without allowing password attempts. This eliminates the attack surface entirely — attackers need a valid private key to even begin authentication.
 
 ---
 
@@ -135,17 +138,20 @@ systemctl restart sshd
 
 ### Required Secrets
 
-| Secret | Purpose | Rotation |
-|--------|---------|----------|
-| `VPS_SSH_KEY` | SSH private key for `deployer` user (NOT root) | Quarterly or on suspicion |
-| `PRODUCTION_VPS_HOST` | Production VPS hostname/IP | On infrastructure change |
-| `STAGING_VPS_HOST` | Staging VPS hostname/IP (optional) | On infrastructure change |
-| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel token (replaces credentials JSON + tunnel ID) | Quarterly or on suspicion |
-| `CLOUDFLARE_API_TOKEN` | API token with DNS:Edit permissions only | Quarterly or on suspicion |
-| `DOMAIN_NAME` | Primary domain name | On domain change |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password (strong, unique) | Quarterly |
-| `SLACK_WEBHOOK_URL` | Notification webhook (optional) | On rotation |
-| `DISCORD_WEBHOOK_URL` | Notification webhook (optional) | On rotation |
+| Secret | Purpose | Format | Rotation |
+|--------|---------|--------|----------|
+| `VPS_SSH_KEY` | SSH private key for `deployer` user (NOT root) | PEM key | Quarterly or on suspicion |
+| `PRODUCTION_VPS_HOST` | Production VPS hostname/IP | Hostname/IP | On infrastructure change |
+| `STAGING_VPS_HOST` | Staging VPS hostname/IP (optional) | Hostname/IP | On infrastructure change |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel token (replaces credentials JSON + tunnel ID) | JWT token | Quarterly or on suspicion |
+| `CLOUDFLARE_API_TOKEN` | API token with DNS:Edit permissions only | Token string | Quarterly or on suspicion |
+| `DOMAIN_NAME` | Primary domain name | Domain string | On domain change |
+| `TRAEFIK_DASHBOARD_AUTH` | Traefik dashboard basic auth | Raw bcrypt hash (single `$`) | Quarterly |
+| `METRICS_AUTH` | Traefik metrics endpoint basic auth | Raw bcrypt hash (single `$`) | Quarterly |
+| `SLACK_WEBHOOK_URL` | Notification webhook (optional) | URL | On rotation |
+| `DISCORD_WEBHOOK_URL` | Notification webhook (optional) | URL | On rotation |
+
+**Important**: `TRAEFIK_DASHBOARD_AUTH` and `METRICS_AUTH` must be stored with **single `$` signs** (raw `htpasswd -nB` output). The deploy workflow automatically doubles them for Docker Compose. Do NOT store pre-doubled `$$` values.
 
 ### Setting up Secrets
 
@@ -260,7 +266,7 @@ All external traffic is routed through the Cloudflare tunnel. No ports are expos
 
 ### Container Hardening Checklist
 
-- [x] **CloudFlared**: Bind metrics to `127.0.0.1:2000` (not `0.0.0.0`)
+- [x] **CloudFlared**: Metrics on `0.0.0.0:2000` — safe (no host ports, only reachable within Docker network)
 - [x] **CloudFlared**: Set `--loglevel info` (not `debug`)
 - [x] **Ollama**: Restrict `OLLAMA_ORIGINS` to known consumers (not `*`)
 - [x] **Traefik**: Add authentication middleware to dashboard route
@@ -271,18 +277,25 @@ All external traffic is routed through the Cloudflare tunnel. No ports are expos
 
 ### Resource Limits
 
-Every container should have explicit resource limits. Example:
+All containers have explicit resource limits:
 
-```yaml
-deploy:
-  resources:
-    limits:
-      memory: 2G
-      cpus: '1.0'
-    reservations:
-      memory: 512M
-      cpus: '0.25'
-```
+| Container | Memory | CPUs |
+|-----------|--------|------|
+| Traefik | 256M | 0.5 |
+| CloudFlared | 256M | 0.3 |
+| Docker Socket Proxy | 128M | 0.2 |
+| Prometheus | 1G | 0.5 |
+| Grafana | 512M | 0.5 |
+| AlertManager | 128M | 0.2 |
+| Loki | 512M | 0.5 |
+| Promtail | 256M | 0.3 |
+| Node Exporter | 128M | 0.2 |
+| cAdvisor | 256M | 0.3 |
+| N8N (template) | 1G | 1.0 |
+| PostgreSQL (template) | 512M | 0.5 |
+| Ollama (template) | 8G | 4.0 |
+| Qdrant (template) | 2G | 1.0 |
+| Generic App (template) | 512M | 0.5 |
 
 ---
 
@@ -303,6 +316,8 @@ All HTTP/HTTPS traffic reaches services exclusively via the Cloudflare tunnel (w
 
 ### fail2ban
 
+Two jails configured: `sshd` for initial bans, `recidive` for repeat offenders.
+
 ```bash
 apt install fail2ban
 systemctl enable fail2ban
@@ -315,12 +330,22 @@ port = ssh
 filter = sshd
 logpath = /var/log/auth.log
 maxretry = 5
-bantime = 3600
-findtime = 600
+bantime = 86400       # 24 hours
+findtime = 600        # 10 minute window
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = %(banaction_allports)s
+maxretry = 5
+bantime = 2592000     # 30 days
+findtime = 86400      # 24 hour window
 EOF
 
 systemctl restart fail2ban
 ```
+
+Monitor with: `sudo fail2ban-client status sshd` and `sudo fail2ban-client status recidive`
 
 ### Automatic Security Updates
 
@@ -345,11 +370,13 @@ auditctl -w /etc/sudoers.d/ -p wa -k sudoers-change
 ### GitHub Actions
 
 The deployment workflow:
-1. Creates credential files from GitHub secrets during deployment
+1. Creates `.env` from GitHub secrets using python3 (avoids bash `$` expansion of bcrypt hashes)
 2. Never stores credentials in the repository
 3. Uses secure environment variable passing via SSH heredocs
 4. Sets `umask 077` during deployment to restrict file permissions
-5. Cleans up SSH key material after deployment
+5. Cleans up SSH key material after deployment (`if: always()`)
+6. Fixes monitoring config permissions (`chmod -R o+rX`) before container start
+7. Doubles `$` signs in auth hashes automatically for Docker Compose compatibility
 
 ### SSH Key Cleanup
 
@@ -401,19 +428,40 @@ Backup location on VPS: `/opt/n8n-v2/shared/backups/{configs,databases,volumes}`
 
 ### Current Stack
 
-- **Prometheus** — Metrics collection (30-day retention)
-- **Grafana** — Dashboard visualization
-- **AlertManager** — Alert routing (Slack, Discord, email)
+- **Prometheus** — Metrics collection (30-day retention), scrapes via Docker socket proxy
+- **Grafana** — Dashboard visualization (Prometheus + Loki datasources)
+- **AlertManager** — Alert routing → N8N webhook → Telegram
+- **Loki** — Log aggregation (7-day retention)
+- **Promtail** — Log shipper (Docker container logs + `/var/log/auth.log`)
 - **cAdvisor** — Container resource metrics
-- **Node Exporter** — System-level metrics
+- **Node Exporter** — System-level metrics + fail2ban textfile collector
 - **Hourly monitoring workflow** — Automated health checks via GitHub Actions
+- **Daily security digest** — Cron job at 08:00 UTC → N8N webhook → Telegram
 
-### Recommended Additions
+### Alert Rules
 
-- [ ] Centralized log aggregation (Loki + Promtail or similar)
+| Group | Alert | Threshold |
+|-------|-------|-----------|
+| Security | SSHBruteForceSpike | >200 failures/hour |
+| Security | SSHDistributedAttack | >15 unique IPs/hour |
+| Security | HighBanCount | >20 banned IPs |
+| System | ContainerDown | Any container down >1min |
+| System | HighCPUUsage | >85% for 5min |
+| System | DiskSpaceCritical | >95% |
+| Services | CloudflareTunnelDown | Tunnel metrics unreachable |
+| Services | ContainerHighMemory | >90% of limit |
+
+### Operational Notes
+
+- Cross-compose-project Prometheus targets use container names (e.g., `edge-traefik-1`), not service names
+- Loki image does not include `wget` — healthcheck uses `curl`
+- Monitoring config files require `chmod -R o+rX` after deployment (automated in workflow)
+
+### Future Improvements
+
 - [ ] Traefik access log analysis for anomaly detection
-- [ ] Cloudflare audit log monitoring
-- [ ] Alert on failed SSH login attempts (via fail2ban + AlertManager)
+- [ ] Cloudflare audit log monitoring via API
+- [ ] Grafana alerting dashboards for Loki log patterns
 
 ---
 
@@ -435,7 +483,7 @@ If credentials are compromised:
 ### Phase 1 — Immediate (before next deployment)
 
 - [x] Rotate all Cloudflare credentials (token, tunnel secret, tunnel ID)
-- [ ] Verify `.env` has never been committed to git history
+- [x] Verify `.env` has never been committed to git history
 - [x] Replace credentials JSON auth with token-based tunnel auth (`CLOUDFLARE_TUNNEL_TOKEN`)
 - [x] Fix CloudFlared metrics binding (`127.0.0.1:2000`) and log level (`info`)
 
@@ -454,8 +502,9 @@ If credentials are compromised:
 
 - [x] Install and configure fail2ban on VPS (7 IPs already banned)
 - [x] Configure UFW — reset to SSH-only, all service ports closed
-- [ ] Install unattended-upgrades for automatic security patches
-- [ ] Set up audit logging on VPS
+- [x] Install unattended-upgrades for automatic security patches
+- [x] Set up audit logging on VPS (auditd with rules for deploy dir, sshd_config, sudoers)
+- [x] Disable SSH password authentication (`PasswordAuthentication no`)
 - [x] Replace direct Docker socket mount with socket proxy for Traefik
 - [x] Add resource limits to all containers
 - [x] Restrict Ollama CORS origins
