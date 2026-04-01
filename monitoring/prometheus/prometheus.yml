@@ -32,21 +32,21 @@ scrape_configs:
   # Traefik metrics (if enabled)
   - job_name: 'traefik'
     static_configs:
-      - targets: ['traefik:8082']  # Updated to correct metrics port
+      - targets: ['edge-traefik-1:8082']  # Container name for cross-project DNS resolution
     scrape_interval: 15s
     metrics_path: /metrics
 
   # CloudFlared metrics (configured with static port)
   - job_name: 'cloudflared'
     static_configs:
-      - targets: ['cloudflared:2000']  # CloudFlared static metrics port
+      - targets: ['edge-cloudflared-1:2000']  # Container name for cross-project DNS resolution
     scrape_interval: 30s
     metrics_path: /metrics
 
   # Dynamic discovery for services with prometheus labels
   - job_name: 'docker-services'
     docker_sd_configs:
-      - host: http://docker-socket-proxy:2375
+      - host: http://edge-docker-socket-proxy-1:2375
         refresh_interval: 30s
         match_first_network: false
         filters:
