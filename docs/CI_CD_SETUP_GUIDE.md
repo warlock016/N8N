@@ -49,7 +49,7 @@ Generate and configure SSH keys for automated access:
 ssh-keygen -t rsa -b 4096 -C "github-actions@yourdomain.com" -f ~/.ssh/github-actions
 
 # Copy public key to VPS
-ssh-copy-id -i ~/.ssh/github-actions.pub root@your-vps-ip
+ssh-copy-id -i ~/.ssh/github-actions.pub deployer@your-vps-ip
 
 # Copy private key content for GitHub secret
 cat ~/.ssh/github-actions
@@ -62,7 +62,7 @@ Ensure your VPS has the required setup:
 
 ```bash
 # SSH to your VPS
-ssh root@your-vps-ip
+ssh deployer@your-vps-ip
 
 # Ensure Docker is installed and running
 docker --version
@@ -286,13 +286,13 @@ cat ~/.ssh/github-actions | head -1
 # Should start with -----BEGIN OPENSSH PRIVATE KEY-----
 
 # Test SSH access manually
-ssh -i ~/.ssh/github-actions root@your-vps-ip
+ssh -i ~/.ssh/github-actions deployer@your-vps-ip
 ```
 
 #### Deployment Timeout:
 ```bash
 # Check VPS resources
-ssh root@your-vps-ip
+ssh deployer@your-vps-ip
 free -h
 df -h
 docker ps
@@ -301,7 +301,7 @@ docker ps
 #### Service Not Starting:
 ```bash
 # Check service logs
-ssh root@your-vps-ip
+ssh deployer@your-vps-ip
 cd /opt/n8n-v2/services/service-name
 docker compose logs
 ```
@@ -322,7 +322,7 @@ cat /opt/n8n-v2/edge/cloudflared/config.yml
 # GitHub Actions → Select failed workflow → View logs
 
 # Manual deployment test
-ssh root@your-vps-ip
+ssh deployer@your-vps-ip
 cd /opt/n8n-v2
 ls -la
 docker ps
@@ -334,7 +334,7 @@ docker network ls
 #### Complete System Recovery:
 ```bash
 # SSH to VPS
-ssh root@your-vps-ip
+ssh deployer@your-vps-ip
 
 # Find latest backup
 ls -la /opt/backups/

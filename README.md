@@ -31,11 +31,8 @@ Edit `.env` with your actual values:
 # Domain Name Configuration
 DOMAIN_NAME=your-domain.com
 
-# Cloudflare Zero Trust Tunnel Configuration & Credentials
-CLOUDFLARE_TOKEN=your_cloudflare_api_token
-ACCOUNT_TAG=your_account_tag
-TUNNEL_SECRET=your_tunnel_secret
-TUNNEL_ID=your_tunnel_id
+# Cloudflare Tunnel Token (from dashboard: Networks > Tunnels > Configure > Token)
+CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token_here
 ```
 
 ### 2. GitHub Repository Setup (For Automated Deployment)
@@ -51,8 +48,7 @@ STAGING_VPS_HOST=your.vps.ip.address    # Same or different VPS
 
 # CloudFlare Configuration
 CLOUDFLARE_API_TOKEN=<your-cloudflare-api-token>
-CLOUDFLARE_TUNNEL_CREDENTIALS=<tunnel-credentials-json-content>
-CLOUDFLARE_TUNNEL_ID=<your-tunnel-id>
+CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
 DOMAIN_NAME=your-domain.com
 
 # Optional: Notification webhooks
@@ -66,7 +62,7 @@ DISCORD_WEBHOOK_URL=<your-discord-webhook>
 ssh-keygen -t rsa -b 4096 -C "github-actions@yourdomain.com" -f ~/.ssh/github-actions
 
 # Copy public key to your VPS
-ssh-copy-id -i ~/.ssh/github-actions.pub root@your-vps-ip
+ssh-copy-id -i ~/.ssh/github-actions.pub deployer@your-vps-ip
 
 # Add private key content to VPS_SSH_KEY secret in GitHub
 cat ~/.ssh/github-actions

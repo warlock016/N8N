@@ -66,18 +66,9 @@ services:
       - "1.1.1.1"
       - "1.0.0.1"
       - "8.8.8.8"
-    volumes:
-      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
-      - ./cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json:/etc/cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json:ro
-      - /root/.cloudflared/cert.pem:/etc/cloudflared/cert.pem:ro
     environment:
-      - TUNNEL_FORCE_PROVISIONING_DNS=true
-      - TUNNEL_TRANSPORT_PROTOCOL=http2
-      - TUNNEL_PROTOCOL=http2
-      - TUNNEL_EDGE_IP_VERSION=4
-      - TUNNEL_DNS_UPSTREAM=1.1.1.1
-      - TUNNEL_METRICS=0.0.0.0:2000
-    command: tunnel --no-autoupdate --loglevel debug --edge-ip-version 4 --metrics 0.0.0.0:2000 run fac1d753-a32c-4778-9a7e-f62f48b4675b
+      - TUNNEL_METRICS=127.0.0.1:2000
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     healthcheck:
       test: ["CMD", "cloudflared", "--version"]
       interval: 30s

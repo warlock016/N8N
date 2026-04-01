@@ -53,7 +53,7 @@ jobs:
           SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
 
           # Ensure service directory exists on VPS
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} "mkdir -p $SERVICE_DIR"
+          ssh -i ~/.ssh/id_rsa deployer@${{ secrets.VPS_HOST }} "mkdir -p $SERVICE_DIR"
 
           # Sync service files, preserving .env on VPS
           rsync -av -e "ssh -i ~/.ssh/id_rsa" \
@@ -64,11 +64,11 @@ jobs:
             --exclude='.gitignore' \
             --exclude='__pycache__/' \
             --exclude='.DS_Store' \
-            . root@${{ secrets.VPS_HOST }}:$SERVICE_DIR/
+            . deployer@${{ secrets.VPS_HOST }}:$SERVICE_DIR/
 
       - name: Deploy service
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ secrets.VPS_HOST }} << EOF
             set -euo pipefail
             SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
             cd "\$SERVICE_DIR"
@@ -85,7 +85,7 @@ jobs:
 
       - name: Health check
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.VPS_HOST }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ secrets.VPS_HOST }} << EOF
             set -euo pipefail
             SERVICE_DIR="${{ steps.vars.outputs.deploy_path }}/shared/services/${{ inputs.service_name }}"
             cd "\$SERVICE_DIR"

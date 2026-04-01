@@ -46,11 +46,8 @@ Edit `.env` with your information:
 # Domain Name Configuration
 DOMAIN_NAME=yourdomain.com
 
-# Cloudflare Zero Trust Tunnel Configuration & Credentials
-CLOUDFLARE_TOKEN=your_cloudflare_api_token_here
-ACCOUNT_TAG=your_account_tag_here
-TUNNEL_SECRET=your_tunnel_secret_here
-TUNNEL_ID=your_tunnel_id_here
+# Cloudflare Tunnel Token (from dashboard: Networks > Tunnels > Configure > Token)
+CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token_here
 ```
 
 > ⚠️ **Important**: Never commit the `.env` file to git. It's already in `.gitignore`.
@@ -69,24 +66,10 @@ TUNNEL_ID=your_tunnel_id_here
 
 ### 2.2 Create CloudFlare Tunnel
 
-```bash
-# Install cloudflared CLI
-# macOS:
-brew install cloudflared
-
-# Ubuntu/Debian:
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo dpkg -i cloudflared-linux-amd64.deb
-
-# Create tunnel
-cloudflared tunnel login
-cloudflared tunnel create your-tunnel-name
-
-# Get tunnel info
-cloudflared tunnel list
-```
-
-Record the tunnel ID and credentials file location.
+1. Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) > Networks > Tunnels
+2. Click "Create a tunnel" > name it > choose "cloudflared"
+3. Copy the tunnel token from the provided docker command
+4. Add it to your `.env` as `CLOUDFLARE_TUNNEL_TOKEN`
 
 ### 2.3 Configure DNS
 
@@ -116,8 +99,7 @@ STAGING_VPS_HOST=your.vps.ip.address
 #### CloudFlare Configuration
 ```
 CLOUDFLARE_API_TOKEN=<your-cloudflare-api-token>
-CLOUDFLARE_TUNNEL_CREDENTIALS=<tunnel-credentials-json-content>
-CLOUDFLARE_TUNNEL_ID=<your-tunnel-id>
+CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
 DOMAIN_NAME=yourdomain.com
 ```
 
@@ -136,7 +118,7 @@ Generate an SSH key pair specifically for automated deployment:
 ssh-keygen -t rsa -b 4096 -C "github-actions@yourdomain.com" -f ~/.ssh/github-actions
 
 # Copy public key to your VPS
-ssh-copy-id -i ~/.ssh/github-actions.pub root@your-vps-ip
+ssh-copy-id -i ~/.ssh/github-actions.pub deployer@your-vps-ip
 
 # Get private key content for GitHub secret
 cat ~/.ssh/github-actions
@@ -237,8 +219,7 @@ docker compose -p monitoring -f monitoring/compose.yml up -d
 | Variable | Purpose | Example |
 |----------|---------|---------|
 | `DOMAIN_NAME` | Your primary domain | `example.com` |
-| `CLOUDFLARE_TOKEN` | API access | `abc123...` |
-| `TUNNEL_ID` | CloudFlare tunnel ID | `fac1d753-...` |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel authentication token | `eyJhI...` |
 
 ### File Structure
 
@@ -284,7 +265,7 @@ docker compose -p monitoring -f monitoring/compose.yml up -d
 env | grep DOMAIN
 
 # Test SSH connection
-ssh -i ~/.ssh/github-actions root@your-vps-ip
+ssh -i ~/.ssh/github-actions deployer@your-vps-ip
 
 # Check Docker services
 docker compose -p edge ps

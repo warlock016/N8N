@@ -54,7 +54,7 @@ jobs:
 
       - name: System Health Check
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.vars.outputs.vps_host }} << 'EOF'
             set -e
             
             DEPLOY_PATH="${{ steps.vars.outputs.deploy_path }}"

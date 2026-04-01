@@ -136,16 +136,12 @@ jobs:
             --exclude='deploy-package' \
             . deploy-package/
 
-          # Create CloudFlare credentials from GitHub secret
-          mkdir -p deploy-package/edge/cloudflared
-          echo '${{ secrets.CLOUDFLARE_TUNNEL_CREDENTIALS }}' > deploy-package/edge/cloudflared/${{ secrets.CLOUDFLARE_TUNNEL_ID }}.json
-
-          # Create .env file for domain configuration
+          # Create .env file with domain and tunnel token
           echo "DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}" > deploy-package/.env
+          echo "CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" >> deploy-package/.env
 
-          # Substitute environment variables in configuration files
-          # Note: Docker Compose only expands variables in compose.yml, not in mounted config files
-          # Therefore, we must substitute variables at deployment time to avoid storing sensitive data in repo
+          # Substitute domain name in configuration files that don't support env var expansion
+          # (Docker Compose expands variables in compose.yml, but not in mounted config files)
           sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/cloudflared/config.yml
           sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/edge/compose.yml
           sed -i "s/\${DOMAIN_NAME}/${{ secrets.DOMAIN_NAME }}/g" deploy-package/monitoring/compose.yml
@@ -167,14 +163,14 @@ jobs:
 
       - name: Upload deployment package
         run: |
-          scp -i ~/.ssh/id_rsa deployment.tar.gz root@${{ steps.vars.outputs.vps_host }}:/tmp/
+          scp -i ~/.ssh/id_rsa deployment.tar.gz deployer@${{ steps.vars.outputs.vps_host }}:/tmp/
 
       - name: Deploy to VPS
         env:
           DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.vars.outputs.vps_host }} << EOF
             set -euo pipefail
             DEPLOY_PATH="${DEPLOY_PATH}"
             DRY_RUN="${DRY_RUN}"
@@ -290,7 +286,7 @@ jobs:
         env:
           DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.vars.outputs.vps_host }} << EOF
             set -euo pipefail
             DEPLOY_PATH="${DEPLOY_PATH}"
             cd "\$DEPLOY_PATH/current"
@@ -340,7 +336,7 @@ jobs:
         env:
           DEPLOY_PATH: ${{ steps.vars.outputs.deploy_path }}
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ steps.vars.outputs.vps_host }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.vars.outputs.vps_host }} << EOF
             set -e
             set -o pipefail
             DEPLOY_PATH="${DEPLOY_PATH}"
@@ -416,7 +412,7 @@ jobs:
         env:
           DEPLOY_PATH: ${{ steps.rollback_vars.outputs.deploy_path }}
         run: |
-          ssh -i ~/.ssh/id_rsa root@${{ steps.rollback_vars.outputs.vps_host }} << EOF
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.rollback_vars.outputs.vps_host }} << EOF
             set -euo pipefail
             DEPLOY_PATH="${DEPLOY_PATH}"
 

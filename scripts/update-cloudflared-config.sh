@@ -14,7 +14,7 @@ if [ ! -d "/etc/cloudflared" ]; then
     # Verify repository config files exist (use absolute paths from deployment root)
     DEPLOYMENT_ROOT="${DEPLOYMENT_ROOT:-$(pwd)}"
     REPO_CONFIG="$DEPLOYMENT_ROOT/edge/cloudflared/config.yml"
-    REPO_CREDENTIALS="$DEPLOYMENT_ROOT/edge/cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json"
+    REPO_CREDENTIALS="$DEPLOYMENT_ROOT/edge/cloudflared/${CLOUDFLARE_TUNNEL_ID:?CLOUDFLARE_TUNNEL_ID must be set}.json"
     
     echo "🔍 Debug: Current working directory: $(pwd)"
     echo "🔍 Debug: Deployment root: $DEPLOYMENT_ROOT"
@@ -50,8 +50,8 @@ else
 
     # Create CloudFlared configuration with concrete values
     cat > "$CLOUDFLARED_CONFIG" << 'EOF'
-tunnel: fac1d753-a32c-4778-9a7e-f62f48b4675b
-credentials-file: /etc/cloudflared/fac1d753-a32c-4778-9a7e-f62f48b4675b.json
+tunnel: ${CLOUDFLARE_TUNNEL_ID}
+credentials-file: /etc/cloudflared/${CLOUDFLARE_TUNNEL_ID}.json
 origincert: /etc/cloudflared/cert.pem
 
 # Protocol settings - disable QUIC to force HTTP/2

@@ -7,7 +7,7 @@ set -euo pipefail
 
 # Configuration
 DOMAIN_SUFFIX="${DOMAIN_SUFFIX:-example.com}"
-TUNNEL_ID="${TUNNEL_ID:-fac1d753-a32c-4778-9a7e-f62f48b4675b}"
+TUNNEL_ID="${TUNNEL_ID:?TUNNEL_ID environment variable must be set}"
 TUNNEL_NAME="${TUNNEL_NAME:-n8n-tunnel}"
 
 # Colors for output

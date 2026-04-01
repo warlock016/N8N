@@ -2,54 +2,211 @@
 
 ## Overview
 
-This document outlines security best practices for managing credentials and sensitive information in this N8N deployment project.
+This document outlines the security posture, known gaps, and remediation plan for the N8N deployment infrastructure. It covers VPS access control, secrets management, container security, network exposure, and operational hardening.
+
+Last audited: 2026-04-01
+
+---
+
+## Security Audit Summary
+
+### Critical Findings
+
+| # | Finding | Status |
+|---|---------|--------|
+| C1 | All CI/CD and manual access uses `root` SSH — no privilege separation | Resolved — deployer + automat users created, root SSH disabled |
+| C2 | Hardcoded Cloudflare tunnel ID in source-controlled files | Resolved — switched to token-based auth |
+| C3 | `.env` contains live Cloudflare credentials (token, tunnel secret, account tag) | Resolved — old credentials rotated, new tunnel created |
+
+### High Findings
+
+| # | Finding | Status |
+|---|---------|--------|
+| H1 | SSH private key written to CI runner disk without cleanup | Open |
+| H2 | CloudFlared metrics bound to `0.0.0.0:2000` (all interfaces) | Open |
+| H3 | CloudFlared running with `--loglevel debug` in production | Open |
+| H4 | Ollama CORS set to `*` (accepts any origin) | Open |
+| H5 | Traefik dashboard exposed without authentication | Open |
+| H6 | Grafana admin password defaults to `admin` if env var unset | Open |
+| H7 | Docker socket mounted directly to Traefik container | Open |
+
+### Medium Findings
+
+| # | Finding | Status |
+|---|---------|--------|
+| M1 | cAdvisor runs with `SYS_ADMIN` capability and `apparmor:unconfined` | Open |
+| M2 | No resource limits on Ollama, Traefik, CloudFlared, Grafana, Prometheus | Open |
+| M3 | Metrics basic auth hash hardcoded in compose file | Open |
+| M4 | PostgreSQL passwords passed as env vars (visible via `docker inspect`) | Open |
+| M5 | No rate limiting configured on any Traefik route | Open |
+| M6 | No fail2ban or SSH brute-force protection on VPS | Open |
+| M7 | No centralized log aggregation | Open |
+| M8 | Backup files created without explicit file permissions | Open |
+| M9 | Host cert mounted from `/root/.cloudflared/cert.pem` | Open |
+
+---
+
+## VPS Access Model
+
+### Principle
+
+Separate automated deployment access from interactive admin access. Never use `root` directly over SSH.
+
+### User Accounts
+
+#### `deployer` — CI/CD service account
+
+Purpose: Automated deployments via GitHub Actions. Restricted to only the commands needed to deploy and manage Docker services.
+
+```bash
+# Create the user
+useradd -m -s /bin/bash deployer
+mkdir -p /home/deployer/.ssh
+chmod 700 /home/deployer/.ssh
+
+# Add the CI/CD public key (generate a NEW keypair for this user)
+echo "<deployer-public-key>" > /home/deployer/.ssh/authorized_keys
+chown -R deployer:deployer /home/deployer/.ssh
+chmod 600 /home/deployer/.ssh/authorized_keys
+
+# Grant scoped sudo permissions
+cat > /etc/sudoers.d/deployer << 'SUDOEOF'
+# Docker operations
+deployer ALL=(root) NOPASSWD: /usr/bin/docker
+deployer ALL=(root) NOPASSWD: /usr/bin/docker compose *
+
+# Deployment directory management
+deployer ALL=(root) NOPASSWD: /bin/mkdir -p /opt/n8n-*
+deployer ALL=(root) NOPASSWD: /bin/ln -sfn /opt/n8n-*/releases/* /opt/n8n-*/current
+deployer ALL=(root) NOPASSWD: /bin/tar -xzf /tmp/deployment.tar.gz *
+deployer ALL=(root) NOPASSWD: /bin/chown -R deployer\:deployer /opt/n8n-*
+deployer ALL=(root) NOPASSWD: /bin/rm -rf /opt/n8n-*/releases/*
+
+# Service management
+deployer ALL=(root) NOPASSWD: /bin/systemctl restart docker
+deployer ALL=(root) NOPASSWD: /usr/bin/ufw status
+SUDOEOF
+chmod 440 /etc/sudoers.d/deployer
+
+# Transfer ownership of deployment directories
+chown -R deployer:deployer /opt/n8n-v2
+chown -R deployer:deployer /opt/n8n-production 2>/dev/null || true
+```
+
+#### Personal admin account — interactive SSH access
+
+Purpose: Manual administration, troubleshooting, general-purpose tasks. Has full sudo privileges but requires your personal SSH key and password for sudo.
+
+```bash
+# Create your personal admin user
+useradd -m -s /bin/bash <your-username> -G sudo
+passwd <your-username>
+
+# Add your personal SSH public key
+mkdir -p /home/<your-username>/.ssh
+echo "<your-personal-public-key>" > /home/<your-username>/.ssh/authorized_keys
+chown -R <your-username>:<your-username> /home/<your-username>/.ssh
+chmod 700 /home/<your-username>/.ssh
+chmod 600 /home/<your-username>/.ssh/authorized_keys
+```
+
+With this account you can run `sudo -i` to get a root shell when needed. The difference from logging in as root directly:
+- SSH logs show your username, not just "root"
+- If your key is compromised, the attacker still needs your sudo password
+- You can disable this account independently without affecting deployments
+
+#### Disable root SSH login
+
+After both accounts are verified working:
+
+```bash
+# /etc/ssh/sshd_config
+PermitRootLogin no
+PasswordAuthentication no
+
+systemctl restart sshd
+```
+
+**Important**: Test SSH access with your personal account in a separate terminal BEFORE closing your current root session.
+
+---
 
 ## GitHub Secrets Management
 
 ### Required Secrets
 
-The following secrets must be configured in your GitHub repository settings:
-
-1. **CLOUDFLARE_TUNNEL_CREDENTIALS** - Complete Cloudflare tunnel credentials JSON
-2. **CLOUDFLARE_API_TOKEN** - Cloudflare API token with DNS:Edit permissions
-3. **CLOUDFLARE_TUNNEL_ID** - Tunnel ID for the Cloudflare tunnel
-4. **DOMAIN_NAME** - Your domain name (e.g., example.com)
-5. **VPS_SSH_KEY** - SSH private key for VPS access
-6. **PRODUCTION_VPS_HOST** - Production VPS hostname/IP
-7. **STAGING_VPS_HOST** - Staging VPS hostname/IP (optional)
+| Secret | Purpose | Rotation |
+|--------|---------|----------|
+| `VPS_SSH_KEY` | SSH private key for `deployer` user (NOT root) | Quarterly or on suspicion |
+| `PRODUCTION_VPS_HOST` | Production VPS hostname/IP | On infrastructure change |
+| `STAGING_VPS_HOST` | Staging VPS hostname/IP (optional) | On infrastructure change |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel token (replaces credentials JSON + tunnel ID) | Quarterly or on suspicion |
+| `CLOUDFLARE_API_TOKEN` | API token with DNS:Edit permissions only | Quarterly or on suspicion |
+| `DOMAIN_NAME` | Primary domain name | On domain change |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password (strong, unique) | Quarterly |
+| `SLACK_WEBHOOK_URL` | Notification webhook (optional) | On rotation |
+| `DISCORD_WEBHOOK_URL` | Notification webhook (optional) | On rotation |
 
 ### Setting up Secrets
 
 1. Navigate to your GitHub repository
-2. Go to Settings → Secrets and variables → Actions
+2. Go to Settings > Secrets and variables > Actions
 3. Click "New repository secret"
 4. Add each required secret with the appropriate value
+
+---
 
 ## Credential Rotation
 
 ### When to Rotate
 
 Rotate credentials immediately if:
-- Credentials are accidentally exposed in code or logs
+- Credentials are accidentally exposed in code, logs, or conversation context
 - A team member with access leaves the organization
 - Suspicious activity is detected
 - As part of regular security maintenance (quarterly recommended)
 
-### How to Rotate
+### Cloudflare Credential Rotation
 
-#### Cloudflare Credentials
+**Tunnel token** (replaces old credentials JSON + tunnel ID + tunnel secret):
 
-1. Generate new tunnel credentials in Cloudflare dashboard
-2. Update GitHub secrets with new values
-3. Deploy to ensure new credentials work
-4. Revoke old credentials in Cloudflare
+1. Log into Cloudflare Zero Trust dashboard: https://one.dash.cloudflare.com/
+2. Go to Networks > Tunnels
+3. Delete the existing tunnel (or create a new one alongside for zero-downtime rotation)
+4. Create a new tunnel > name it > choose "cloudflared"
+5. Copy the tunnel token from the provided docker command
+6. Update GitHub secret: `CLOUDFLARE_TUNNEL_TOKEN`
+7. Update local `.env` with the new token (never commit this file)
+8. Deploy to verify the new tunnel connects
+9. Delete the old tunnel if it still exists
 
-#### API Tokens
+**API token** (for DNS management scripts):
 
-1. Generate new API token in Cloudflare with minimal required permissions
-2. Update `CLOUDFLARE_API_TOKEN` secret
-3. Test deployment to ensure functionality
-4. Delete old token from Cloudflare
+1. Go to https://dash.cloudflare.com/profile/api-tokens
+2. Create Token > use "Edit zone DNS" template (scope to your zone only)
+3. Update GitHub secret: `CLOUDFLARE_API_TOKEN`
+4. Test DNS scripts to verify functionality
+5. Delete the old token from the same page
+
+**Note**: `ACCOUNT_TAG` is your Cloudflare account identifier (not a secret, not rotatable). It is safe to keep in configuration but should not be in source-controlled files.
+
+### SSH Key Rotation
+
+1. Generate a new keypair: `ssh-keygen -t ed25519 -C "deployer@github-actions"`
+2. Add the new public key to `deployer`'s `authorized_keys` on VPS
+3. Update the `VPS_SSH_KEY` GitHub secret with the new private key
+4. Test a deployment
+5. Remove the old public key from `authorized_keys`
+
+### Post-Rotation Verification
+
+After any rotation, trigger a deployment (staging first) and verify:
+- CloudFlare tunnel connects successfully
+- DNS records resolve correctly
+- All services pass health checks
+- Monitoring stack reports healthy
+
+---
 
 ## File Security
 
@@ -57,9 +214,10 @@ Rotate credentials immediately if:
 
 The following files are excluded from git tracking via `.gitignore`:
 
-- `edge/cloudflared/*.json` - Tunnel credential files
-- `.env` and `*.env` - Environment files
-- `*.pem`, `*.key`, `*.crt` - Certificate and key files
+- `edge/cloudflared/*.json` — Tunnel credential files
+- `.env` and `*.env` — Environment files with secrets
+- `*.pem`, `*.key`, `*.crt` — Certificate and key files
+- `*.sqlite`, `*.sqlite3` — Database files
 
 ### Never Commit
 
@@ -67,56 +225,245 @@ The following files are excluded from git tracking via `.gitignore`:
 - API tokens or keys
 - SSH private keys
 - Database passwords
-- SSL certificates
+- SSL/TLS certificates or private keys
+- Tunnel credential JSON files
 - Any file containing sensitive credentials
 
-## Deployment Security
+### Verifying Git History
+
+Periodically verify no secrets have entered git history:
+
+```bash
+# Check if .env was ever committed
+git log --all -p -- .env
+
+# Search for known secret patterns
+git log --all -S "CLOUDFLARE_TOKEN" --oneline
+git log --all -S "TUNNEL_SECRET" --oneline
+```
+
+If secrets are found in history, use `git filter-repo` to purge them and force-push.
+
+---
+
+## Container & Service Security
+
+### Network Architecture
+
+| Network | Purpose | External Access |
+|---------|---------|-----------------|
+| `edge` | Traefik + CloudFlared reverse proxy | Via Cloudflare tunnel only |
+| `ai-internal` | Ollama, Qdrant, PostgreSQL | None (internal only) |
+| `monitoring` | Prometheus, Grafana, AlertManager | Via Cloudflare tunnel only |
+
+All external traffic is routed through the Cloudflare tunnel. No ports are exposed directly on the VPS host.
+
+### Container Hardening Checklist
+
+- [ ] **CloudFlared**: Bind metrics to `127.0.0.1:2000` (not `0.0.0.0`)
+- [ ] **CloudFlared**: Set `--loglevel info` (not `debug`)
+- [ ] **Ollama**: Restrict `OLLAMA_ORIGINS` to known consumers (not `*`)
+- [ ] **Traefik**: Add authentication middleware to dashboard route
+- [ ] **Traefik**: Use a Docker socket proxy instead of direct socket mount
+- [ ] **Grafana**: Remove default password fallback (`:-admin`)
+- [ ] **All services**: Add `deploy.resources.limits` for memory and CPU
+- [x] **Compose**: Switched to token-based auth (no more credentials JSON or tunnel ID in compose)
+
+### Resource Limits
+
+Every container should have explicit resource limits. Example:
+
+```yaml
+deploy:
+  resources:
+    limits:
+      memory: 2G
+      cpus: '1.0'
+    reservations:
+      memory: 512M
+      cpus: '0.25'
+```
+
+---
+
+## VPS Hardening
+
+### Firewall
+
+```bash
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from <TRUSTED_IP>/32 to any port 22 proto tcp  # SSH from known IPs
+ufw deny 80
+ufw deny 443
+ufw enable
+```
+
+All HTTP/HTTPS traffic reaches services exclusively via the Cloudflare tunnel (which originates outbound connections from the VPS), so ports 80/443 do not need to be open.
+
+### fail2ban
+
+```bash
+apt install fail2ban
+systemctl enable fail2ban
+
+# /etc/fail2ban/jail.local
+cat > /etc/fail2ban/jail.local << 'EOF'
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+EOF
+
+systemctl restart fail2ban
+```
+
+### Automatic Security Updates
+
+```bash
+apt install unattended-upgrades
+dpkg-reconfigure -plow unattended-upgrades
+```
+
+### Audit Logging
+
+```bash
+apt install auditd
+auditctl -w /opt/n8n-v2 -p wa -k n8n-deploy
+auditctl -w /etc/ssh/sshd_config -p wa -k ssh-config
+auditctl -w /etc/sudoers.d/ -p wa -k sudoers-change
+```
+
+---
+
+## CI/CD Security
 
 ### GitHub Actions
 
 The deployment workflow:
 1. Creates credential files from GitHub secrets during deployment
 2. Never stores credentials in the repository
-3. Uses secure environment variable passing
-4. Cleans up temporary credential files after deployment
+3. Uses secure environment variable passing via SSH heredocs
+4. Sets `umask 077` during deployment to restrict file permissions
+5. Cleans up SSH key material after deployment
+
+### SSH Key Cleanup
+
+All workflows must include a cleanup step:
+
+```yaml
+- name: Cleanup SSH key
+  if: always()
+  run: |
+    rm -f ~/.ssh/id_rsa
+    rm -f ~/.ssh/known_hosts
+```
+
+### Workflow Protections
+
+- Concurrency groups prevent duplicate deployments
+- Pre-deployment validation (Docker Compose config check, shellcheck)
+- Automatic rollback on deployment failure
+- Health checks after deployment
+- Backup creation before every deployment (7-day retention)
+
+---
+
+## Deployment Security
 
 ### Environment Variables
 
 When running scripts locally, use environment variables or the `.env` file:
 
 ```bash
-# Option 1: Export environment variables
-export CLOUDFLARE_API_TOKEN="your_token_here"
-export CLOUDFLARE_TUNNEL_ID="your_tunnel_id_here"
-export DOMAIN_NAME="your-domain.com"
-./scripts/cloudflare-dns-api.sh update subdomain
-
-# Option 2: Use .env file (recommended)
+# Use .env file
 cp env.example .env
-# Edit .env with your actual values
-./scripts/svc init
+# Edit .env with your actual values — NEVER commit this file
 ```
 
-**Important**: Never commit your `.env` file to the repository. It contains sensitive credentials.
+### Backup & Recovery
+
+Automated backups are created before each deployment:
+- Service configurations
+- PostgreSQL database dumps (`pg_dump` per database)
+- Docker volume archives
+- Retention: last 7 backups
+
+Backup location on VPS: `/opt/n8n-v2/shared/backups/{configs,databases,volumes}`
+
+---
 
 ## Monitoring and Alerts
 
-### Recommended Monitoring
+### Current Stack
 
-- Enable GitHub security alerts for dependencies
-- Monitor Cloudflare audit logs for unauthorized changes
-- Set up alerts for failed authentication attempts on VPS
-- Regular security scans of the deployed infrastructure
+- **Prometheus** — Metrics collection (30-day retention)
+- **Grafana** — Dashboard visualization
+- **AlertManager** — Alert routing (Slack, Discord, email)
+- **cAdvisor** — Container resource metrics
+- **Node Exporter** — System-level metrics
+- **Hourly monitoring workflow** — Automated health checks via GitHub Actions
 
-### Incident Response
+### Recommended Additions
+
+- [ ] Centralized log aggregation (Loki + Promtail or similar)
+- [ ] Traefik access log analysis for anomaly detection
+- [ ] Cloudflare audit log monitoring
+- [ ] Alert on failed SSH login attempts (via fail2ban + AlertManager)
+
+---
+
+## Incident Response
 
 If credentials are compromised:
 
-1. **Immediate**: Rotate all potentially affected credentials
-2. **Assess**: Review logs for unauthorized access
-3. **Update**: Change all related passwords and tokens
-4. **Document**: Record the incident and lessons learned
-5. **Review**: Update security procedures if needed
+1. **Immediate**: Rotate all potentially affected credentials (see rotation procedures above)
+2. **Isolate**: If VPS compromise is suspected, restrict firewall to your IP only
+3. **Assess**: Review `auth.log`, `audit.log`, Docker logs, and Cloudflare audit logs
+4. **Update**: Change all related passwords, tokens, and SSH keys
+5. **Document**: Record the incident timeline and lessons learned
+6. **Harden**: Update security procedures based on findings
+
+---
+
+## Remediation Action Items
+
+### Phase 1 — Immediate (before next deployment)
+
+- [ ] Rotate all Cloudflare credentials (token, tunnel secret, tunnel ID)
+- [ ] Verify `.env` has never been committed to git history
+- [x] Replace credentials JSON auth with token-based tunnel auth (`CLOUDFLARE_TUNNEL_TOKEN`)
+- [x] Fix CloudFlared metrics binding (`127.0.0.1:2000`) and log level (`info`)
+
+### Phase 2 — This week
+
+- [x] Create `deployer` user on VPS with scoped sudo
+- [x] Upgrade `automat` user to admin with sudo group
+- [ ] Update `VPS_SSH_KEY` GitHub secret with deployer's ed25519 private key
+- [x] Update all workflow files to use `deployer@` instead of `root@`
+- [x] Disable root SSH login (`PermitRootLogin no`)
+- [ ] Add SSH key cleanup step to all workflows
+- [ ] Add authentication to Traefik dashboard
+- [ ] Set strong Grafana admin password, remove `:-admin` default
+
+### Phase 3 — This month
+
+- [x] Install and configure fail2ban on VPS (7 IPs already banned)
+- [ ] Configure UFW with IP-restricted SSH access
+- [ ] Install unattended-upgrades for automatic security patches
+- [ ] Set up audit logging on VPS
+- [ ] Replace direct Docker socket mount with socket proxy for Traefik
+- [ ] Add resource limits to all containers
+- [ ] Restrict Ollama CORS origins
+- [ ] Migrate PostgreSQL passwords to Docker Secrets
+- [ ] Enable rate limiting on Traefik routes
+- [ ] Set up centralized logging (Loki + Promtail)
+
+---
 
 ## Best Practices
 
@@ -129,10 +476,10 @@ If credentials are compromised:
 
 ### Deployment
 
-- Use least-privilege access for all services
+- Use least-privilege access for all services and users
 - Enable audit logging where possible
-- Regularly review and rotate credentials
-- Use secure communication channels (HTTPS, SSH)
+- Regularly review and rotate credentials (quarterly)
+- Use secure communication channels (HTTPS, SSH with key auth only)
 
 ### Team Access
 
@@ -140,10 +487,6 @@ If credentials are compromised:
 - Use individual accounts rather than shared credentials
 - Implement proper offboarding procedures
 - Regular access reviews and cleanups
-
-## Contact
-
-For security concerns or to report vulnerabilities, contact the project maintainers.
 
 ---
 
