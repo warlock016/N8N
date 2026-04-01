@@ -163,7 +163,8 @@ jobs:
 
       - name: Upload deployment package
         run: |
-          scp -i ~/.ssh/id_rsa deployment.tar.gz deployer@${{ steps.vars.outputs.vps_host }}:/tmp/
+          ssh -i ~/.ssh/id_rsa deployer@${{ steps.vars.outputs.vps_host }} "mkdir -p /home/deployer/deployments"
+          scp -i ~/.ssh/id_rsa deployment.tar.gz deployer@${{ steps.vars.outputs.vps_host }}:/home/deployer/deployments/deployment.tar.gz
 
       - name: Deploy to VPS
         env:
@@ -228,7 +229,7 @@ jobs:
             # Extract new release
             echo "📦 Extracting new release..."
             mkdir -p "\$NEW_REL"
-            tar -xzf /tmp/deployment.tar.gz -C "\$NEW_REL"
+            tar -xzf /home/deployer/deployments/deployment.tar.gz -C "\$NEW_REL"
 
             # Copy deployment metadata
             if [ -f "\$NEW_REL/deployment-info.json" ]; then
