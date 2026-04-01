@@ -85,9 +85,7 @@ jobs:
     name: Deploy to VPS
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
-    environment:
-      name: production
-      url: ${{ vars.DEPLOYMENT_URL }}
+    environment: production
 
     steps:
       - name: Checkout code
