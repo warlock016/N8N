@@ -169,9 +169,9 @@ groups:
           summary: "N8N is down"
           description: "The N8N automation container is not running."
 
-      # High container memory usage
+      # High container memory usage (only for containers with memory limits set)
       - alert: ContainerHighMemory
-        expr: (container_memory_usage_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"} / container_spec_memory_limit_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) * 100 > 90
+        expr: (container_memory_usage_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"} / (container_spec_memory_limit_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"} != 0)) * 100 > 90
         for: 5m
         labels:
           severity: warning
