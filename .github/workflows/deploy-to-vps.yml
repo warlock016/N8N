@@ -137,10 +137,19 @@ jobs:
             . deploy-package/
 
           # Create .env file with domain, tunnel token, and auth credentials
-          echo "DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}" > deploy-package/.env
-          echo "CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" >> deploy-package/.env
-          echo "TRAEFIK_DASHBOARD_AUTH=${{ secrets.TRAEFIK_DASHBOARD_AUTH }}" >> deploy-package/.env
-          echo "METRICS_AUTH=${{ secrets.METRICS_AUTH }}" >> deploy-package/.env
+          # Auth hashes contain $ that must be doubled for Docker Compose.
+          # Use python to avoid bash expansion issues with special characters.
+          python3 -c "
+          import os
+          lines = [
+              f'DOMAIN_NAME={os.environ[\"DOMAIN_NAME\"]}',
+              f'CLOUDFLARE_TUNNEL_TOKEN={os.environ[\"CLOUDFLARE_TUNNEL_TOKEN\"]}',
+              'TRAEFIK_DASHBOARD_AUTH=' + os.environ['TRAEFIK_DASHBOARD_AUTH'].replace('\$', '\$\$'),
+              'METRICS_AUTH=' + os.environ['METRICS_AUTH'].replace('\$', '\$\$'),
+          ]
+          with open('deploy-package/.env', 'w') as f:
+              f.write('\n'.join(lines) + '\n')
+          "
 
           # Substitute domain name in configuration files that don't support env var expansion
           # (Docker Compose expands variables in compose.yml, but not in mounted config files)
@@ -159,9 +168,14 @@ jobs:
             "workflow": "${{ github.workflow }}"
           }
           EOF
-          
+
           # Create archive
           tar -czf deployment.tar.gz -C deploy-package .
+        env:
+          DOMAIN_NAME: ${{ secrets.DOMAIN_NAME }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          TRAEFIK_DASHBOARD_AUTH: ${{ secrets.TRAEFIK_DASHBOARD_AUTH }}
+          METRICS_AUTH: ${{ secrets.METRICS_AUTH }}
 
       - name: Upload deployment package
         run: |
@@ -330,6 +344,9 @@ jobs:
               fi
               sleep 2
             done
+
+            # Fix monitoring config permissions (containers run as non-root)
+            chmod -R o+rX "\$DEPLOY_PATH/current/monitoring/"
 
             # Update monitoring
             echo "📊 Updating monitoring..."
