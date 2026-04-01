@@ -37,13 +37,8 @@ jobs:
       - name: Set deployment variables
         id: vars
         run: |
-          if [[ "${{ github.event.inputs.environment || 'production' }}" == "production" ]]; then
-            echo "vps_host=${{ secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
-            echo "deploy_path=/opt/n8n-production" >> $GITHUB_OUTPUT
-          else
-            echo "vps_host=${{ secrets.STAGING_VPS_HOST || secrets.PRODUCTION_VPS_HOST }}" >> $GITHUB_OUTPUT
-            echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
-          fi
+          echo "vps_host=${{ secrets.VPS_HOST }}" >> $GITHUB_OUTPUT
+          echo "deploy_path=/opt/n8n-v2" >> $GITHUB_OUTPUT
 
       - name: Setup SSH key
         run: |
