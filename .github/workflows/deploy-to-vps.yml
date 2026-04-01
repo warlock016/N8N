@@ -291,7 +291,7 @@ jobs:
             done
 
             # Fix monitoring config permissions (containers run as non-root)
-            sudo chmod -R o+rX /opt/n8n-v2/current/monitoring/
+            docker run --rm -v /opt/n8n-v2/current/monitoring:/mnt alpine chmod -R o+rX /mnt
 
             echo "📊 Updating monitoring..."
             docker compose -p monitoring -f monitoring/compose.yml pull
@@ -374,7 +374,7 @@ jobs:
               ln -sfn "$DEPLOY_PATH/releases/$PREV" "$DEPLOY_PATH/current"
 
               cd "$DEPLOY_PATH/current"
-              sudo chmod -R o+rX "$DEPLOY_PATH/current/monitoring/"
+              docker run --rm -v "$DEPLOY_PATH/current/monitoring":/mnt alpine chmod -R o+rX /mnt
               docker compose -p edge --env-file .env -f edge/compose.yml up -d --force-recreate
               docker compose -p monitoring -f monitoring/compose.yml up -d --force-recreate
 
