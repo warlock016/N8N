@@ -1,0 +1,126 @@
+groups:
+  - name: security
+    rules:
+      # SSH brute-force detection via node-exporter login metrics
+      - alert: HighSSHLoginFailures
+        expr: increase(node_logind_sessions_active[5m]) == 0 and increase(node_systemd_unit_state{name="ssh.service",state="active"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Possible SSH brute-force activity"
+          description: "SSH service is active but no successful logins detected — may indicate ongoing brute-force attempts."
+
+  - name: system
+    rules:
+      # Container down
+      - alert: ContainerDown
+        expr: absent(container_last_seen{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) or (time() - container_last_seen{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) > 60
+        for: 2m
+        labels:
+          severity: critical
+          category: system
+        annotations:
+          summary: "Container {{ $labels.name }} is down"
+          description: "Container {{ $labels.name }} has not been seen for more than 2 minutes."
+
+      # Container restarting
+      - alert: ContainerRestarting
+        expr: increase(container_start_time_seconds{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}[15m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: "Container {{ $labels.name }} is restart-looping"
+          description: "Container {{ $labels.name }} has restarted more than 3 times in 15 minutes."
+
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: "High CPU usage: {{ $value | printf \"%.1f\" }}%"
+          description: "CPU usage has been above 85% for more than 5 minutes."
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: "High memory usage: {{ $value | printf \"%.1f\" }}%"
+          description: "Memory usage has been above 85% for more than 5 minutes."
+
+      # Disk space low
+      - alert: DiskSpaceLow
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: "Disk usage high: {{ $value | printf \"%.1f\" }}%"
+          description: "Root filesystem is more than 80% full."
+
+      - alert: DiskSpaceCritical
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 95
+        for: 1m
+        labels:
+          severity: critical
+          category: system
+        annotations:
+          summary: "Disk almost full: {{ $value | printf \"%.1f\" }}%"
+          description: "Root filesystem is more than 95% full. Immediate action required."
+
+  - name: services
+    rules:
+      # Cloudflare tunnel down
+      - alert: CloudflareTunnelDown
+        expr: absent(container_last_seen{name="edge-cloudflared-1"}) or (time() - container_last_seen{name="edge-cloudflared-1"}) > 60
+        for: 1m
+        labels:
+          severity: critical
+          category: services
+        annotations:
+          summary: "Cloudflare tunnel is down"
+          description: "The cloudflared container is not running. All public services are unreachable."
+
+      # Traefik down
+      - alert: TraefikDown
+        expr: absent(container_last_seen{name="edge-traefik-1"}) or (time() - container_last_seen{name="edge-traefik-1"}) > 60
+        for: 1m
+        labels:
+          severity: critical
+          category: services
+        annotations:
+          summary: "Traefik reverse proxy is down"
+          description: "Traefik is not running. All service routing is broken."
+
+      # N8N down
+      - alert: N8NDown
+        expr: absent(container_last_seen{name="n8n-private"}) or (time() - container_last_seen{name="n8n-private"}) > 60
+        for: 2m
+        labels:
+          severity: critical
+          category: services
+        annotations:
+          summary: "N8N is down"
+          description: "The N8N automation container is not running."
+
+      # High container memory usage
+      - alert: ContainerHighMemory
+        expr: (container_memory_usage_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"} / container_spec_memory_limit_bytes{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          category: services
+        annotations:
+          summary: "Container {{ $labels.name }} memory at {{ $value | printf \"%.0f\" }}%"
+          description: "Container {{ $labels.name }} is using more than 90% of its memory limit."
