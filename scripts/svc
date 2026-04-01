@@ -137,7 +137,8 @@ def new(
     # Write compose file
     compose_file = service_dir / "compose.yml"
     compose_file.write_text(template_content)
-    
+    compose_file.chmod(0o600)
+
     # Create .env file with sensitive data
     if template in ["n8n", "postgresql", "ollama"]:
         env_content = f"""# Generated configuration for {name}

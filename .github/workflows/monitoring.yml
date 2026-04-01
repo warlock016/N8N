@@ -213,6 +213,12 @@ jobs:
             echo "**Status:** 🟡 DEGRADED" >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Cleanup SSH credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+          rm -f ~/.ssh/known_hosts
+
   notify-on-failure:
     needs: system-health
     runs-on: ubuntu-latest

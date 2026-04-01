@@ -71,7 +71,7 @@ services:
       - "traefik.http.middlewares.{{NAME}}-headers.headers.contentSecurityPolicy=default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss: ws:; font-src 'self' https:; frame-ancestors 'self';"
       
       # Apply middleware chain
-      - traefik.http.routers.{{NAME}}.middlewares={{NAME}}-headers
+      - traefik.http.routers.{{NAME}}.middlewares={{NAME}}-headers,rate-limit
       
       # WebSocket support for /rest/push
       - traefik.http.routers.{{NAME}}.service={{NAME}}
@@ -81,6 +81,11 @@ services:
       - prometheus.io/port=5678
       - prometheus.io/path=/metrics
       - service_name={{NAME}}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5678/healthz"]
       interval: 30s

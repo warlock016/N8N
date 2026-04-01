@@ -12,7 +12,7 @@ services:
     expose: ["11434"]
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
+      - OLLAMA_ORIGINS=http://n8n-private:5678,http://localhost:11434
       - OLLAMA_MODELS=/root/.ollama/models
       # Performance settings  
       - OLLAMA_NUM_THREADS=16
@@ -21,6 +21,11 @@ services:
       - OLLAMA_FLASH_ATTENTION=true
     volumes:
       - {{NAME}}_models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
     labels:
       - traefik.enable=false  # Ollama should only be accessible internally
     healthcheck:

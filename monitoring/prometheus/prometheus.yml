@@ -43,35 +43,10 @@ scrape_configs:
     scrape_interval: 30s
     metrics_path: /metrics
 
-  # PV Telemetry Application metrics
-  # NOTE: If running as a container, ensure it's connected to the 'monitoring' network
-  # If running on host, replace 'pv-telemetry-app' with '172.20.0.1:8081' (gateway IP)
-  - job_name: 'pv-telemetry-app'
-    static_configs:
-      - targets: ['pv-telemetry-app:8081']
-        labels:
-          service: 'pv-telemetry'
-          component: 'application'
-          metrics_type: 'ingestion'
-    scrape_interval: 10s
-    metrics_path: /metrics
-
-  # PV Telemetry Database metrics (PostgreSQL/TimescaleDB via postgres-exporter)
-  - job_name: 'pv-telemetry-db'
-    static_configs:
-      - targets: ['pv-telemetry-db-exporter:9187']
-        labels:
-          service: 'pv-telemetry'
-          component: 'database'
-          metrics_type: 'postgres'
-          database: 'pv_telemetry'
-    scrape_interval: 15s
-    metrics_path: /metrics
-
   # Dynamic discovery for services with prometheus labels
   - job_name: 'docker-services'
     docker_sd_configs:
-      - host: unix:///var/run/docker.sock
+      - host: http://docker-socket-proxy:2375
         refresh_interval: 30s
         match_first_network: false
         filters:

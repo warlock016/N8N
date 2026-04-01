@@ -17,10 +17,12 @@ services:
       - --providers.docker.watch=true
       - --providers.docker.network=edge
       - --providers.docker.allowEmptyServices=true
+      - --providers.docker.endpoint=tcp://docker-socket-proxy:2375
       # Provider throttle to handle rapid config changes
       - --providers.providersThrottleDuration=10s
       # Entrypoints
       - --entryPoints.web.address=:80
+      - --entryPoints.web.forwardedHeaders.trustedIPs=172.16.0.0/12,10.0.0.0/8
       - --entryPoints.metrics.address=:8082
       - --entryPoints.ping.address=:8081
       # API & Dashboard
@@ -34,14 +36,16 @@ services:
       # Health check endpoint
       - --ping=true
       - --ping.entryPoint=ping
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - docker-socket-proxy
     labels:
       # Traefik dashboard at traefik.${DOMAIN_NAME}
       - traefik.enable=true
       - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN_NAME}`)
       - traefik.http.routers.traefik.service=api@internal
       - traefik.http.routers.traefik.entrypoints=web
+      - traefik.http.routers.traefik.middlewares=dashboard-auth
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
       # Metrics endpoint
       - >
         traefik.http.routers.metrics.rule=Host(`traefik.${DOMAIN_NAME}`) &&
@@ -49,7 +53,17 @@ services:
       - traefik.http.routers.metrics.service=prometheus@internal
       - traefik.http.routers.metrics.entrypoints=metrics
       - traefik.http.routers.metrics.middlewares=metrics-auth
-      - "traefik.http.middlewares.metrics-auth.basicauth.users=metrics:$$apr1$$K1S6aVmJ$$eXuzqkAScyT4exq/YsOOx0"
+      - "traefik.http.middlewares.metrics-auth.basicauth.users=${METRICS_AUTH}"
+      # Global rate limiting middleware (available to all routers)
+      - traefik.http.middlewares.rate-limit.ratelimit.average=100
+      - traefik.http.middlewares.rate-limit.ratelimit.burst=200
+      - traefik.http.middlewares.rate-limit.ratelimit.period=1s
+      - traefik.http.middlewares.rate-limit.ratelimit.sourcecriterion.ipstrategy.depth=1
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
     # Enable healthcheck for deployment validation
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--timeout=5", "http://localhost:8081/ping"]
@@ -67,11 +81,50 @@ services:
       - "1.0.0.1"
       - "8.8.8.8"
     environment:
-      - TUNNEL_METRICS=127.0.0.1:2000
+      - TUNNEL_METRICS=0.0.0.0:2000
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
     healthcheck:
       test: ["CMD", "cloudflared", "--version"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    networks: [edge]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Allow read-only access to container/network/service info
+      - CONTAINERS=1
+      - NETWORKS=1
+      - SERVICES=1
+      - TASKS=1
+      - EVENTS=1
+      - INFO=1
+      # Deny all write/dangerous operations
+      - POST=0
+      - BUILD=0
+      - COMMIT=0
+      - CONFIGS=0
+      - DISTRIBUTION=0
+      - EXEC=0
+      - IMAGES=0
+      - NODES=0
+      - PLUGINS=0
+      - SECRETS=0
+      - SWARM=0
+      - SYSTEM=0
+      - VOLUMES=0
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'

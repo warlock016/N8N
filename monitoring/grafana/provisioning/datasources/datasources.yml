@@ -13,3 +13,11 @@ datasources:
       prometheusType: Prometheus
       prometheusVersion: 2.40.0
       cacheLevel: 'High'
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000

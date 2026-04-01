@@ -136,9 +136,11 @@ jobs:
             --exclude='deploy-package' \
             . deploy-package/
 
-          # Create .env file with domain and tunnel token
+          # Create .env file with domain, tunnel token, and auth credentials
           echo "DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}" > deploy-package/.env
           echo "CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" >> deploy-package/.env
+          echo "TRAEFIK_DASHBOARD_AUTH=${{ secrets.TRAEFIK_DASHBOARD_AUTH }}" >> deploy-package/.env
+          echo "METRICS_AUTH=${{ secrets.METRICS_AUTH }}" >> deploy-package/.env
 
           # Substitute domain name in configuration files that don't support env var expansion
           # (Docker Compose expands variables in compose.yml, but not in mounted config files)
@@ -225,6 +227,10 @@ jobs:
             echo "  Pruning old backups..."
             find "\$SHARED/backups" \( -type f \( -name '*.tar.gz' -o -name '*.sql' -o -name '*.dump' \) \) \
               -printf '%T@ %p\n' | sort -rn | awk 'NR>7 {print \$2}' | xargs -r rm -f
+
+            # 6. Ensure backup files have restrictive permissions
+            find "\$SHARED/backups" -type f -exec chmod 600 {} \; 2>/dev/null || true
+            find "\$SHARED/backups" -type d -exec chmod 700 {} \; 2>/dev/null || true
 
             # Extract new release
             echo "📦 Extracting new release..."
@@ -384,6 +390,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployment type:** Platform (edge + monitoring)" >> $GITHUB_STEP_SUMMARY
 
+      - name: Cleanup SSH credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+          rm -f ~/.ssh/known_hosts
+
   rollback:
     runs-on: ubuntu-latest
     name: Rollback (Manual)
@@ -442,3 +454,9 @@ jobs:
               exit 1
             fi
           EOF
+
+      - name: Cleanup SSH credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+          rm -f ~/.ssh/known_hosts
