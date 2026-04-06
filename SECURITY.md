@@ -301,18 +301,115 @@ All containers have explicit resource limits:
 
 ## VPS Hardening
 
-### Firewall
+### Firewall (UFW)
+
+Two layers of protection: subnet-level blocks for known abuse networks (dropped at kernel level), and SSH-only access for everything else.
 
 ```bash
 ufw default deny incoming
 ufw default allow outgoing
-ufw allow from <TRUSTED_IP>/32 to any port 22 proto tcp  # SSH from known IPs
-ufw deny 80
-ufw deny 443
+ufw allow 22/tcp
 ufw enable
 ```
 
 All HTTP/HTTPS traffic reaches services exclusively via the Cloudflare tunnel (which originates outbound connections from the VPS), so ports 80/443 do not need to be open.
+
+#### Blocked Abuse Networks
+
+Known bulletproof hosting providers and scanning networks are permanently blocked at the firewall. These rules are inserted before the SSH allow rule so packets are dropped before reaching fail2ban or SSH.
+
+| Subnet | Operator | Reason | Added |
+|--------|----------|--------|-------|
+| `92.118.39.0/24` | DMZHOST (NL) | Persistent SSH scanning, 5000+ attempts | 2026-04-06 |
+| `2.57.122.0/24` | DMZHOST / TECHOFF SRV (NL) | Persistent SSH scanning, coordinated with above | 2026-04-06 |
+| `195.178.110.0/24` | TECHOFF SRV LIMITED (GB/AD) | Repeat offender, same abuse contact | 2026-04-06 |
+| `45.148.10.0/24` | DMZHOST (AD) | Same operator, same abuse pattern | 2026-04-06 |
+
+#### Adding New Abuse Networks
+
+When you observe persistent attackers in the Grafana security dashboard or fail2ban logs, follow this process to evaluate and block them:
+
+**Step 1 — Identify repeat offenders**
+
+```bash
+# Find IPs that have been banned multiple times
+sudo grep "Ban" /var/log/fail2ban.log | grep -oP '\d+\.\d+\.\d+\.\d+' | sort | uniq -c | sort -rn | head -15
+
+# Check currently banned IPs
+sudo fail2ban-client status sshd
+```
+
+**Step 2 — Investigate the source network**
+
+```bash
+# Look up the IP's network owner
+whois <IP> | grep -iE "org|net|descr|country|abuse"
+
+# For RIPE-managed IPs (European/Middle East), query RIPE directly
+whois -h whois.ripe.net <IP> | grep -iE "org|net|descr|country|abuse|inetnum"
+```
+
+**Red flags that indicate a block-worthy network:**
+- Gmail or disposable email for abuse contact
+- "Bulletproof" hosting providers (DMZHOST, TECHOFF, etc.)
+- Multiple IPs from the same /24 appearing in your ban list
+- Organization registered in one country, operating in another
+- Network description is just a URL or empty
+- Same `mnt-ref` or `org` across multiple attacking subnets
+
+**Step 3 — Verify the subnet scope**
+
+```bash
+# Check the inetnum range — only block what they own
+whois -h whois.ripe.net <IP> | grep "inetnum"
+# Example output: inetnum: 92.118.39.0 - 92.118.39.255 → block 92.118.39.0/24
+```
+
+**Step 4 — Apply the block**
+
+```bash
+# Insert before the SSH allow rule (position 1)
+sudo ufw insert 1 deny from <SUBNET>/24 to any comment "<OPERATOR> - abuse network"
+
+# Verify rule order — deny rules must come before allow rules
+sudo ufw status numbered
+```
+
+**Step 5 — Document the block**
+
+Update this table (above) with the subnet, operator, reason, and date.
+
+#### Removing a Block
+
+```bash
+# List rules with numbers
+sudo ufw status numbered
+
+# Delete by number
+sudo ufw delete <number>
+```
+
+#### Periodic Review Checklist (monthly)
+
+```bash
+# 1. Review current firewall rules
+sudo ufw status numbered
+
+# 2. Check fail2ban effectiveness
+sudo fail2ban-client status sshd
+sudo fail2ban-client status recidive
+sudo fail2ban-client status recidive-permanent
+
+# 3. Find new repeat offenders not yet blocked at firewall level
+sudo grep "Ban" /var/log/fail2ban.log | grep -oP '\d+\.\d+\.\d+\.\d+' | sort | uniq -c | sort -rn | head -15
+
+# 4. Check if any blocked subnets are no longer attacking (optional cleanup)
+sudo grep -c "BLOCK" /var/log/ufw.log  # Overall block count
+
+# 5. Review Grafana security dashboard for trends
+# - SSH Attack Activity panel: are failures declining?
+# - Banned IPs by Jail: is recidive catching repeat offenders?
+```
 
 ### fail2ban
 
@@ -335,6 +432,7 @@ findtime = 600        # 10 minute window
 
 [recidive]
 enabled = true
+backend = auto
 logpath = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
 # 30-day ban if banned 3+ times within 7 days
@@ -344,6 +442,8 @@ findtime = 604800     # 7 day window
 
 [recidive-permanent]
 enabled = true
+filter = recidive[_jailname=recidive-permanent]
+backend = auto
 logpath = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
 # Permanent ban if banned 5+ times within 30 days
@@ -355,11 +455,41 @@ EOF
 systemctl restart fail2ban
 ```
 
+**Important configuration notes:**
+- `backend = auto` is required for recidive jails — without it, fail2ban uses systemd journal matching (`PRIORITY=5`) which doesn't capture ban events from the log file
+- `filter = recidive[_jailname=recidive-permanent]` is required for custom jail names — it references the built-in recidive filter and sets the jail name to prevent self-matching loops
+
 Monitor with:
 ```bash
 sudo fail2ban-client status sshd
 sudo fail2ban-client status recidive
 sudo fail2ban-client status recidive-permanent
+```
+
+### Threat Landscape
+
+The VPS receives continuous automated SSH scanning from botnets and bulletproof hosting providers. This is normal for any internet-facing server — it is not targeted.
+
+**Typical attack patterns observed:**
+- **Volume**: 50-200 failed SSH attempts per hour from 10-20 unique IPs
+- **Usernames tried**: `root` (90%+), `admin`, `ubuntu`, `sol`/`solana`/`validator` (crypto botnet)
+- **Source networks**: Bulletproof hosting (DMZHOST, TECHOFF), compromised VPS instances, residential IoT botnets
+- **Behavior**: Automated credential stuffing, abandon after first rejection (password auth disabled)
+
+**Why these attacks are not a threat:**
+- `PasswordAuthentication no` — attackers can't even attempt passwords
+- `PermitRootLogin no` — the most-targeted username is rejected instantly
+- Key-only auth — brute-forcing an ed25519 key is computationally infeasible
+- fail2ban escalation — persistent IPs are permanently banned
+- UFW subnet blocks — known abuse networks are dropped at kernel level
+
+**Attack flow:**
+```
+Attacker → UFW (subnet blocked? → DROP)
+         → SSH (key auth only → immediate reject)
+         → fail2ban sshd (5 rejects → 24h ban)
+         → fail2ban recidive (3 bans in 7d → 30-day ban)
+         → fail2ban recidive-permanent (5 bans in 30d → permanent ban)
 ```
 
 ### Automatic Security Updates
