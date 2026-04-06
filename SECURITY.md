@@ -316,7 +316,7 @@ All HTTP/HTTPS traffic reaches services exclusively via the Cloudflare tunnel (w
 
 ### fail2ban
 
-Two jails configured: `sshd` for initial bans, `recidive` for repeat offenders.
+Three-tier ban escalation: initial 24h ban, 30-day ban for repeat offenders, permanent ban for persistent attackers.
 
 ```bash
 apt install fail2ban
@@ -337,15 +337,30 @@ findtime = 600        # 10 minute window
 enabled = true
 logpath = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
-maxretry = 5
+# 30-day ban if banned 3+ times within 7 days
+maxretry = 3
 bantime = 2592000     # 30 days
-findtime = 86400      # 24 hour window
+findtime = 604800     # 7 day window
+
+[recidive-permanent]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = %(banaction_allports)s
+# Permanent ban if banned 5+ times within 30 days
+maxretry = 5
+bantime = -1          # permanent
+findtime = 2592000    # 30 day window
 EOF
 
 systemctl restart fail2ban
 ```
 
-Monitor with: `sudo fail2ban-client status sshd` and `sudo fail2ban-client status recidive`
+Monitor with:
+```bash
+sudo fail2ban-client status sshd
+sudo fail2ban-client status recidive
+sudo fail2ban-client status recidive-permanent
+```
 
 ### Automatic Security Updates
 
