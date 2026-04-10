@@ -108,6 +108,33 @@ else
     echo "    Added blocklist rules to $UFW_BEFORE_RULES"
 fi
 
+echo "==> Saving initial ipset state..."
+# Save state BEFORE installing units so blocklist-restore.service has
+# something to load if a reboot happens mid-install.
+ipset save abuse-ips > "$STATE_DIR/abuse-ips.save"
+ipset save abuse-subnets > "$STATE_DIR/abuse-subnets.save"
+
+echo "==> Installing scripts..."
+install -m 755 "$SCRIPT_DIR/update-blocklist.sh" "$INSTALL_DIR/update-blocklist.sh"
+install -m 755 "$SCRIPT_DIR/restore-blocklist.sh" "$INSTALL_DIR/restore-blocklist.sh"
+
+echo "==> Installing systemd units..."
+install -m 644 "$SCRIPT_DIR/blocklist.service" /etc/systemd/system/blocklist.service
+install -m 644 "$SCRIPT_DIR/blocklist.timer" /etc/systemd/system/blocklist.timer
+install -m 644 "$SCRIPT_DIR/blocklist-restore.service" /etc/systemd/system/blocklist-restore.service
+
+# Install UFW drop-in and enable restore BEFORE reloading UFW, so that:
+#  (a) the UFW rules referencing our ipsets are already paired with a hard
+#      dependency on blocklist-restore.service, and
+#  (b) if a reboot happens between `ufw reload` and the end of this script,
+#      UFW will come back up with the restore service already enabled and
+#      the drop-in already in place — no broken firewall window.
+mkdir -p /etc/systemd/system/ufw.service.d
+install -m 644 "$SCRIPT_DIR/ufw-blocklist.conf" /etc/systemd/system/ufw.service.d/blocklist.conf
+
+systemctl daemon-reload
+systemctl enable blocklist-restore.service
+
 echo "==> Reloading UFW to apply rules..."
 ufw reload >/dev/null
 
@@ -123,9 +150,8 @@ if ! iptables -L ufw-before-input -n 2>/dev/null | grep -q "match-set abuse-subn
 fi
 echo "    UFW rules verified"
 
-echo "==> Saving initial ipset state..."
-ipset save abuse-ips > "$STATE_DIR/abuse-ips.save"
-ipset save abuse-subnets > "$STATE_DIR/abuse-subnets.save"
+echo "==> Enabling hourly update timer..."
+systemctl enable --now blocklist.timer
 
 echo "==> Installing whitelist..."
 WHITELIST_FILE="$CONFIG_DIR/whitelist.conf"
@@ -153,25 +179,6 @@ EOF
 else
     echo "    Whitelist already exists at $WHITELIST_FILE"
 fi
-
-echo "==> Installing scripts..."
-install -m 755 "$SCRIPT_DIR/update-blocklist.sh" "$INSTALL_DIR/update-blocklist.sh"
-install -m 755 "$SCRIPT_DIR/restore-blocklist.sh" "$INSTALL_DIR/restore-blocklist.sh"
-
-echo "==> Installing systemd units..."
-install -m 644 "$SCRIPT_DIR/blocklist.service" /etc/systemd/system/blocklist.service
-install -m 644 "$SCRIPT_DIR/blocklist.timer" /etc/systemd/system/blocklist.timer
-install -m 644 "$SCRIPT_DIR/blocklist-restore.service" /etc/systemd/system/blocklist-restore.service
-
-# Install UFW drop-in so systemd treats blocklist-restore as a hard dependency.
-# If the restore service fails (missing ipset, corrupt state), UFW will refuse
-# to start rather than silently running without the blocklist rules.
-mkdir -p /etc/systemd/system/ufw.service.d
-install -m 644 "$SCRIPT_DIR/ufw-blocklist.conf" /etc/systemd/system/ufw.service.d/blocklist.conf
-
-systemctl daemon-reload
-systemctl enable blocklist-restore.service
-systemctl enable --now blocklist.timer
 
 echo "==> Verification summary:"
 ips_count=$(ipset list abuse-ips -terse 2>/dev/null | awk '/Number of entries/{print $4}')
