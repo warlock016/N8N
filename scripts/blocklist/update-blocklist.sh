@@ -27,7 +27,7 @@ set -euo pipefail
 
 # --- Configuration (override via environment) -------------------------------
 IP_BAN_THRESHOLD="${IP_BAN_THRESHOLD:-3}"        # IP with N+ bans → block
-SUBNET_IP_THRESHOLD="${SUBNET_IP_THRESHOLD:-3}"  # /24 with N+ distinct IPs → block
+SUBNET_IP_THRESHOLD="${SUBNET_IP_THRESHOLD:-5}"  # /24 with N+ distinct IPs → block
 FAIL2BAN_LOG="${FAIL2BAN_LOG:-/var/log/fail2ban.log}"
 WHITELIST_FILE="${WHITELIST_FILE:-/etc/blocklist/whitelist.conf}"
 STATE_DIR="${STATE_DIR:-/var/lib/blocklist}"
