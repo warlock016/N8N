@@ -70,8 +70,39 @@ else
     echo "    abuse-subnets already exists"
 fi
 
+echo "==> Saving initial ipset state..."
+# Save state BEFORE touching UFW config so blocklist-restore.service has
+# something to load if a reboot happens mid-install.
+ipset save abuse-ips > "$STATE_DIR/abuse-ips.save"
+ipset save abuse-subnets > "$STATE_DIR/abuse-subnets.save"
+
+echo "==> Installing scripts..."
+install -m 755 "$SCRIPT_DIR/update-blocklist.sh" "$INSTALL_DIR/update-blocklist.sh"
+install -m 755 "$SCRIPT_DIR/restore-blocklist.sh" "$INSTALL_DIR/restore-blocklist.sh"
+
+echo "==> Installing systemd units..."
+install -m 644 "$SCRIPT_DIR/blocklist.service" /etc/systemd/system/blocklist.service
+install -m 644 "$SCRIPT_DIR/blocklist.timer" /etc/systemd/system/blocklist.timer
+install -m 644 "$SCRIPT_DIR/blocklist-restore.service" /etc/systemd/system/blocklist-restore.service
+
+# Install UFW drop-in and enable restore BEFORE reloading UFW, so that:
+#  (a) the UFW rules referencing our ipsets are already paired with a hard
+#      dependency on blocklist-restore.service, and
+#  (b) if a reboot happens between `ufw reload` and the end of this script,
+#      UFW will come back up with the restore service already enabled and
+#      the drop-in already in place — no broken firewall window.
+mkdir -p /etc/systemd/system/ufw.service.d
+install -m 644 "$SCRIPT_DIR/ufw-blocklist.conf" /etc/systemd/system/ufw.service.d/blocklist.conf
+
+systemctl daemon-reload
+systemctl enable blocklist-restore.service
+
+# Now edit before.rules. This is the last recovery mechanism to fall into
+# place: by the time we reference the ipsets from UFW config, the drop-in
+# and restore service are both active. A reboot during or after this step
+# will be handled cleanly by blocklist-restore.service (fail loud if it
+# can't recreate the sets, thanks to Requires=).
 echo "==> Adding DROP rules to UFW before.rules..."
-# We add rules to UFW's before.rules so they're reapplied on `ufw reload`.
 # The marker block makes this idempotent.
 if grep -Fq "$MARKER_BEGIN" "$UFW_BEFORE_RULES"; then
     echo "    Blocklist rules already present in $UFW_BEFORE_RULES"
@@ -107,33 +138,6 @@ else
     chmod 640 "$UFW_BEFORE_RULES"
     echo "    Added blocklist rules to $UFW_BEFORE_RULES"
 fi
-
-echo "==> Saving initial ipset state..."
-# Save state BEFORE installing units so blocklist-restore.service has
-# something to load if a reboot happens mid-install.
-ipset save abuse-ips > "$STATE_DIR/abuse-ips.save"
-ipset save abuse-subnets > "$STATE_DIR/abuse-subnets.save"
-
-echo "==> Installing scripts..."
-install -m 755 "$SCRIPT_DIR/update-blocklist.sh" "$INSTALL_DIR/update-blocklist.sh"
-install -m 755 "$SCRIPT_DIR/restore-blocklist.sh" "$INSTALL_DIR/restore-blocklist.sh"
-
-echo "==> Installing systemd units..."
-install -m 644 "$SCRIPT_DIR/blocklist.service" /etc/systemd/system/blocklist.service
-install -m 644 "$SCRIPT_DIR/blocklist.timer" /etc/systemd/system/blocklist.timer
-install -m 644 "$SCRIPT_DIR/blocklist-restore.service" /etc/systemd/system/blocklist-restore.service
-
-# Install UFW drop-in and enable restore BEFORE reloading UFW, so that:
-#  (a) the UFW rules referencing our ipsets are already paired with a hard
-#      dependency on blocklist-restore.service, and
-#  (b) if a reboot happens between `ufw reload` and the end of this script,
-#      UFW will come back up with the restore service already enabled and
-#      the drop-in already in place — no broken firewall window.
-mkdir -p /etc/systemd/system/ufw.service.d
-install -m 644 "$SCRIPT_DIR/ufw-blocklist.conf" /etc/systemd/system/ufw.service.d/blocklist.conf
-
-systemctl daemon-reload
-systemctl enable blocklist-restore.service
 
 echo "==> Reloading UFW to apply rules..."
 ufw reload >/dev/null
