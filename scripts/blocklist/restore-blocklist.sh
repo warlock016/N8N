@@ -19,9 +19,13 @@ set -uo pipefail
 
 STATE_DIR="${STATE_DIR:-/var/lib/blocklist}"
 
-# Ipset parameters — must match setup-blocklist.sh
-IPS_PARAMS="hash:ip family inet hashsize 4096 maxelem 65536 timeout 2592000 comment"
-NET_PARAMS="hash:net family inet hashsize 1024 maxelem 8192 timeout 2592000 comment"
+# Ipset parameters — must match setup-blocklist.sh.
+# timeout 2073600 = 24 days (ipset 7.19 on Ubuntu 24.04 caps per-entry
+# timeouts at ~24.9 days despite docs suggesting higher; 30 days exceeds
+# this limit with "out of range 0-2147483"). The updater refreshes TTLs
+# on every run for IPs that continue to attack, so 24-day TTL is ample.
+IPS_PARAMS="hash:ip family inet hashsize 4096 maxelem 65536 timeout 2073600 comment"
+NET_PARAMS="hash:net family inet hashsize 1024 maxelem 8192 timeout 2073600 comment"
 
 log_info()  { logger -t blocklist-restore "$*"; echo "$*"; }
 log_warn()  { logger -t blocklist-restore -p warning "$*"; echo "WARNING: $*" >&2; }

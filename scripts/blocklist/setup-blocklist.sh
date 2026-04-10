@@ -25,8 +25,8 @@ INSTALL_DIR="/usr/local/bin"
 UFW_BEFORE_RULES="/etc/ufw/before.rules"
 
 # Ipset parameters — must match restore-blocklist.sh
-IPS_PARAMS="hash:ip family inet hashsize 4096 maxelem 65536 timeout 2592000 comment"
-NET_PARAMS="hash:net family inet hashsize 1024 maxelem 8192 timeout 2592000 comment"
+IPS_PARAMS="hash:ip family inet hashsize 4096 maxelem 65536 timeout 2073600 comment"
+NET_PARAMS="hash:net family inet hashsize 1024 maxelem 8192 timeout 2073600 comment"
 
 MARKER_BEGIN="# BEGIN blocklist (managed by setup-blocklist.sh)"
 MARKER_END="# END blocklist"
@@ -52,7 +52,7 @@ touch /var/log/blocklist-updates.log
 chmod 640 /var/log/blocklist-updates.log
 
 echo "==> Creating ipsets..."
-# abuse-ips: individual IPs with 30-day TTL (self-cleaning)
+# abuse-ips: individual IPs with 24-day TTL (self-cleaning)
 if ! ipset list abuse-ips >/dev/null 2>&1; then
     # shellcheck disable=SC2086  # intentional word splitting
     ipset create abuse-ips $IPS_PARAMS
@@ -61,7 +61,7 @@ else
     echo "    abuse-ips already exists"
 fi
 
-# abuse-subnets: CIDR ranges with 30-day TTL
+# abuse-subnets: CIDR ranges with 24-day TTL
 if ! ipset list abuse-subnets >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     ipset create abuse-subnets $NET_PARAMS

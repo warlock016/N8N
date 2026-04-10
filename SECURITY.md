@@ -493,11 +493,11 @@ ipset:abuse-ips    ipset:abuse-subnets
 - Scales to millions of entries without performance degradation
 - Survives reboots via a dedicated restore service
 - Survives `ufw reload` via rules integrated into `/etc/ufw/before.rules`
-- Entries auto-expire after 30 days (ipset TTL) unless refreshed by the updater
+- Entries auto-expire after 24 days (ipset TTL) unless refreshed by the updater
 
 **Logic:**
 1. Parse `/var/log/fail2ban.log` (including rotated `.1`, `.2.gz` etc.)
-2. IPs with ≥3 bans → add to `abuse-ips` ipset (30-day TTL)
+2. IPs with ≥3 bans → add to `abuse-ips` ipset (24-day TTL)
 3. /24 subnets with ≥3 distinct attacking IPs → add to `abuse-subnets` ipset
 4. Whitelist entries (localhost, private ranges, trusted IPs) are never blocked
 5. TTLs refresh automatically on re-encounter (stale entries age out)
