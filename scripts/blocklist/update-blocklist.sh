@@ -10,11 +10,18 @@
 # Whitelist entries in /etc/blocklist/whitelist.conf are never blocked.
 #
 # Threshold rationale:
-#   IP_BAN_THRESHOLD=3 means an IP must accumulate 3 fail2ban bans before being
-#   promoted to the permanent blocklist. Since fail2ban's sshd jail triggers on
-#   5 failed attempts, this represents ~15 failed login attempts over multiple
-#   ban cycles. Lowering this threshold is aggressive; raising it delays the
-#   promotion of clear attackers.
+#   IP_BAN_THRESHOLD=3 means an IP must accumulate 3 "Ban" events in
+#   fail2ban.log before promotion. This counts Ban lines from any jail
+#   (sshd, recidive, recidive-permanent). A single attacker banned once by
+#   sshd and then escalated by both recidive jails produces 3 Ban lines,
+#   reaching threshold quickly — which is appropriate, because recidive
+#   escalation is itself a strong signal that the IP is a persistent
+#   offender worth permanent blocking.
+#
+#   The floor is roughly:
+#     - 5 failed SSH attempts (triggers sshd ban)         →  1 Ban line
+#     - +2 more ban cycles OR recidive escalation          → +2 Ban lines
+#   So 3 counts means clear repeat offender, not transient noise.
 
 set -euo pipefail
 
@@ -78,6 +85,35 @@ ipset_count() {
     echo "${count:-0}"
 }
 
+# Validate the whitelist file once at startup. Logs warnings for any
+# malformed lines so a typo doesn't silently leave a "trusted" IP unprotected.
+validate_whitelist() {
+    local warnings
+    warnings=$(WL_PATH="$WHITELIST_FILE" python3 -c '
+import ipaddress, os, sys
+path = os.environ["WL_PATH"]
+with open(path) as f:
+    for i, raw in enumerate(f, 1):
+        entry = raw.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        try:
+            if "/" in entry:
+                ipaddress.ip_network(entry, strict=False)
+            else:
+                ipaddress.ip_address(entry)
+        except Exception as e:
+            print(f"line {i}: {entry!r} ({e})", file=sys.stderr)
+' 2>&1 >/dev/null) || true
+
+    if [ -n "$warnings" ]; then
+        while IFS= read -r w; do
+            [ -z "$w" ] && continue
+            log "WARNING: malformed whitelist $w"
+        done <<< "$warnings"
+    fi
+}
+
 # --- Sanity checks -----------------------------------------------------------
 
 if [ "$EUID" -ne 0 ]; then
@@ -102,14 +138,19 @@ fi
 
 mkdir -p "$STATE_DIR" "$(dirname "$METRICS_FILE")"
 
-# --- Lock: prevent concurrent runs -------------------------------------------
+# --- Lock: prevent concurrent runs (acquired before any logging) ------------
 
 LOCK_FILE="$STATE_DIR/.lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-    log "Another update is in progress, exiting"
+    # Log to stderr only — don't risk a race on the shared log file
+    echo "$(date -Iseconds) Another update is in progress, exiting" >&2
     exit 0
 fi
+
+# --- Validate whitelist and log any issues ----------------------------------
+
+validate_whitelist
 
 # --- Find repeat offender IPs ------------------------------------------------
 
@@ -120,16 +161,19 @@ added_subnets=0
 skipped_ips=0
 
 # Scan current log plus any rotated logs (.1, .2.gz, etc.)
+# Note: "Ban " (capital B) doesn't match "Unban" (lowercase b after U).
 collect_ban_lines() {
+    local f
     grep "Ban " "$FAIL2BAN_LOG" 2>/dev/null || true
+    shopt -s nullglob
     for f in "${FAIL2BAN_LOG}".*; do
-        [ -f "$f" ] || continue
         if [[ "$f" == *.gz ]]; then
             zgrep "Ban " "$f" 2>/dev/null || true
         else
             grep "Ban " "$f" 2>/dev/null || true
         fi
     done
+    shopt -u nullglob
 }
 
 mapfile -t ban_lines < <(collect_ban_lines)

@@ -1,6 +1,5 @@
 [Unit]
 Description=Hourly blocklist update
-Requires=blocklist.service
 
 [Timer]
 # Run 5 minutes after boot, then every hour

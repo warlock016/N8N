@@ -1,6 +1,9 @@
 [Unit]
-Description=Restore blocklist ipsets and iptables rules at boot
+Description=Restore blocklist ipsets at boot (before UFW)
 DefaultDependencies=no
+# Ensure /var/lib/blocklist is mounted before we try to read save files
+After=local-fs.target
+RequiresMountsFor=/var/lib/blocklist
 Before=network-pre.target
 Before=ufw.service
 Wants=network-pre.target

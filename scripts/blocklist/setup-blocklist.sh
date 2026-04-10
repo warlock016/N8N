@@ -84,13 +84,12 @@ else
     # the matching COMMIT.
     awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" '
     /^\*filter/ { in_filter = 1 }
-    /^COMMIT$/ && in_filter && !inserted {
+    /^COMMIT$/ && in_filter {
         print begin
         print "# Drop packets from abuse IP blocklist (managed by update-blocklist.sh)"
         print "-A ufw-before-input -m set --match-set abuse-ips src -j DROP"
         print "-A ufw-before-input -m set --match-set abuse-subnets src -j DROP"
         print end
-        inserted = 1
         in_filter = 0
     }
     { print }
@@ -111,6 +110,18 @@ fi
 
 echo "==> Reloading UFW to apply rules..."
 ufw reload >/dev/null
+
+# Positive verification: the DROP rules must be live in ufw-before-input
+if ! iptables -L ufw-before-input -n 2>/dev/null | grep -q "match-set abuse-ips src"; then
+    echo "ERROR: abuse-ips DROP rule not present in ufw-before-input after reload" >&2
+    echo "Check: iptables -L ufw-before-input -n" >&2
+    exit 1
+fi
+if ! iptables -L ufw-before-input -n 2>/dev/null | grep -q "match-set abuse-subnets src"; then
+    echo "ERROR: abuse-subnets DROP rule not present in ufw-before-input after reload" >&2
+    exit 1
+fi
+echo "    UFW rules verified"
 
 echo "==> Saving initial ipset state..."
 ipset save abuse-ips > "$STATE_DIR/abuse-ips.save"
@@ -151,10 +162,26 @@ echo "==> Installing systemd units..."
 install -m 644 "$SCRIPT_DIR/blocklist.service" /etc/systemd/system/blocklist.service
 install -m 644 "$SCRIPT_DIR/blocklist.timer" /etc/systemd/system/blocklist.timer
 install -m 644 "$SCRIPT_DIR/blocklist-restore.service" /etc/systemd/system/blocklist-restore.service
+
+# Install UFW drop-in so systemd treats blocklist-restore as a hard dependency.
+# If the restore service fails (missing ipset, corrupt state), UFW will refuse
+# to start rather than silently running without the blocklist rules.
+mkdir -p /etc/systemd/system/ufw.service.d
+install -m 644 "$SCRIPT_DIR/ufw-blocklist.conf" /etc/systemd/system/ufw.service.d/blocklist.conf
+
 systemctl daemon-reload
 systemctl enable blocklist-restore.service
 systemctl enable --now blocklist.timer
 
+echo "==> Verification summary:"
+ips_count=$(ipset list abuse-ips -terse 2>/dev/null | awk '/Number of entries/{print $4}')
+nets_count=$(ipset list abuse-subnets -terse 2>/dev/null | awk '/Number of entries/{print $4}')
+echo "    abuse-ips:     ${ips_count:-0} entries"
+echo "    abuse-subnets: ${nets_count:-0} entries"
+echo "    UFW rules:     verified present in ufw-before-input"
+echo "    Timer status:  $(systemctl is-active blocklist.timer)"
+
+echo ""
 echo "==> Setup complete!"
 echo ""
 echo "Next steps:"
