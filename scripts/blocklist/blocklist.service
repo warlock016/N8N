@@ -1,0 +1,14 @@
+[Unit]
+Description=Update abuse IP blocklist from fail2ban logs
+After=fail2ban.service
+Requires=fail2ban.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/update-blocklist.sh
+# Harden the service
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/blocklist /var/log /var/lib/node_exporter/textfile_collector
+ProtectHome=true
+PrivateTmp=true

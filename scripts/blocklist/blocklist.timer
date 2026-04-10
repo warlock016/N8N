@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly blocklist update
+Requires=blocklist.service
+
+[Timer]
+# Run 5 minutes after boot, then every hour
+OnBootSec=5min
+OnUnitActiveSec=1h
+# Run even if system was offline at the scheduled time
+Persistent=true
+Unit=blocklist.service
+
+[Install]
+WantedBy=timers.target

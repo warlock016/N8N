@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore blocklist ipsets and iptables rules at boot
+DefaultDependencies=no
+Before=network-pre.target
+Before=ufw.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/restore-blocklist.sh
+
+[Install]
+WantedBy=multi-user.target

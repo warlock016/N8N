@@ -466,6 +466,154 @@ sudo fail2ban-client status recidive
 sudo fail2ban-client status recidive-permanent
 ```
 
+### Automated Blocklist (ipset + systemd timer)
+
+For fully automated handling of repeat offenders, the VPS runs a periodic script that promotes IPs and subnets from the fail2ban log to a persistent kernel-level blocklist. This complements fail2ban (which holds bans in memory with TTLs) by providing a permanent, high-scale blocklist that survives reboots and fail2ban restarts.
+
+#### Architecture
+
+```
+/var/log/fail2ban.log
+         ↓
+  update-blocklist.sh (hourly via systemd timer)
+         ↓
+    ┌────┴────┐
+    ↓         ↓
+ipset:abuse-ips    ipset:abuse-subnets
+    ↓         ↓
+ iptables INPUT DROP (inserted before UFW rules)
+    ↓
+ Metrics → node_exporter textfile collector
+    ↓
+ Grafana dashboard + Prometheus alerts
+```
+
+**Why ipset over more UFW rules:**
+- O(1) kernel hash lookup vs O(n) linear rule traversal
+- Scales to millions of entries without performance degradation
+- Survives reboots via a dedicated restore service
+- Works alongside existing UFW rules without conflict (ipset state is independent of UFW's iptables management)
+
+**Logic:**
+1. Parse `/var/log/fail2ban.log` (including rotated logs)
+2. IPs with ≥3 bans → add to `abuse-ips` ipset
+3. /24 subnets with ≥3 distinct attacking IPs → add to `abuse-subnets` ipset
+4. Whitelist entries (localhost, private ranges, trusted IPs) are never blocked
+5. State is persisted to disk and reloaded on boot
+6. Metrics exported to Prometheus for visualization
+
+#### Installation
+
+The scripts live in `scripts/blocklist/` and are deployed with the rest of the infrastructure. Run the one-time setup on the VPS as root:
+
+```bash
+# Run from the current release directory on the VPS
+cd /opt/n8n-v2/current/scripts/blocklist
+sudo ./setup-blocklist.sh
+```
+
+This installs `ipset`, creates the two ipsets, adds iptables DROP rules, sets up the whitelist at `/etc/blocklist/whitelist.conf`, installs `blocklist-restore.service` (restores state at boot), and enables `blocklist.timer` (runs the updater hourly).
+
+**After setup, edit the whitelist to add any trusted IPs:**
+
+```bash
+sudo nano /etc/blocklist/whitelist.conf
+# Add any IP or CIDR range you want to protect from auto-blocking, e.g.:
+# 203.0.113.42       # home
+# 198.51.100.0/24    # office
+```
+
+Then run the first update manually:
+
+```bash
+sudo /usr/local/bin/update-blocklist.sh
+```
+
+#### Configuration
+
+The update script accepts environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IP_BAN_THRESHOLD` | 3 | Minimum ban count before an IP is added to `abuse-ips` |
+| `SUBNET_IP_THRESHOLD` | 3 | Minimum distinct attacking IPs in a /24 before the subnet is added |
+| `FAIL2BAN_LOG` | `/var/log/fail2ban.log` | Path to fail2ban log |
+| `WHITELIST_FILE` | `/etc/blocklist/whitelist.conf` | Whitelist path |
+
+To override, edit `/etc/systemd/system/blocklist.service` and add `Environment=...` lines, then `systemctl daemon-reload`.
+
+#### Operations
+
+**View the current blocklist:**
+
+```bash
+# IPs
+sudo ipset list abuse-ips | head -20
+
+# Subnets
+sudo ipset list abuse-subnets
+
+# Counts only
+sudo ipset list abuse-ips -terse
+sudo ipset list abuse-subnets -terse
+```
+
+**Check the timer and recent runs:**
+
+```bash
+systemctl status blocklist.timer
+systemctl list-timers blocklist.timer
+journalctl -u blocklist.service -n 50
+tail -50 /var/log/blocklist-updates.log
+```
+
+**Manually remove a false positive:**
+
+```bash
+# Remove a specific IP
+sudo ipset del abuse-ips 1.2.3.4
+
+# Remove a subnet
+sudo ipset del abuse-subnets 1.2.3.0/24
+
+# Persist the change (save ipset state to /var/lib/blocklist/)
+sudo ipset save abuse-ips > /var/lib/blocklist/abuse-ips.save
+sudo ipset save abuse-subnets > /var/lib/blocklist/abuse-subnets.save
+
+# Then add the IP/subnet to the whitelist so it won't be re-added
+sudo nano /etc/blocklist/whitelist.conf
+```
+
+**Flush and reset (if something goes wrong):**
+
+```bash
+sudo ipset flush abuse-ips
+sudo ipset flush abuse-subnets
+sudo ipset save abuse-ips > /var/lib/blocklist/abuse-ips.save
+sudo ipset save abuse-subnets > /var/lib/blocklist/abuse-subnets.save
+sudo systemctl start blocklist.service  # rebuild from logs
+```
+
+**Metrics exported to Prometheus:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `blocklist_ips_total` | gauge | Current number of blocked IPs |
+| `blocklist_subnets_total` | gauge | Current number of blocked subnets |
+| `blocklist_last_update_timestamp` | gauge | Unix timestamp of last run |
+| `blocklist_ips_added_last_run` | gauge | New IPs added in the most recent update |
+| `blocklist_subnets_added_last_run` | gauge | New subnets added in the most recent update |
+
+**Grafana dashboard:** The Security & Intrusion Detection dashboard includes blocklist panels showing total blocked IPs/subnets, last update time, and growth over time.
+
+**Prometheus alerts:**
+- `BlocklistUpdateStalled` — no update in 2+ hours (timer may have failed)
+- `BlocklistGrowthSpike` — 10+ new IPs added in a single run (possible attack surge)
+
+#### Manual UFW subnet blocks
+
+The UFW-level subnet blocks (documented above) are maintained separately for well-known bulletproof hosting providers. Those rules are permanent and hand-curated. The automated blocklist handles the long tail of individual offenders and emerging /24 patterns.
+
 ### Threat Landscape
 
 The VPS receives continuous automated SSH scanning from botnets and bulletproof hosting providers. This is normal for any internet-facing server — it is not targeted.

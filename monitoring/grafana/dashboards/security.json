@@ -169,6 +169,83 @@
         { "expr": "fail2ban_failed_total", "legendFormat": "Failed {{jail}}" },
         { "expr": "fail2ban_bans_total", "legendFormat": "Total Bans {{jail}}" }
       ]
+    },
+    {
+      "type": "stat",
+      "title": "Permanent Blocklist IPs",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "blocklist_ips_total", "legendFormat": "IPs" }]
+    },
+    {
+      "type": "stat",
+      "title": "Permanent Blocklist Subnets",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "purple", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "blocklist_subnets_total", "legendFormat": "Subnets" }]
+    },
+    {
+      "type": "stat",
+      "title": "Last Blocklist Update",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeFromNow",
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3600 }, { "color": "red", "value": 7200 }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "blocklist_last_update_timestamp * 1000", "legendFormat": "Last Update" }]
+    },
+    {
+      "type": "stat",
+      "title": "Added Last Run",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 10 }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "blocklist_ips_added_last_run", "legendFormat": "IPs" },
+        { "expr": "blocklist_subnets_added_last_run", "legendFormat": "Subnets" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocklist Growth Over Time",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 20, "lineWidth": 2, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "blocklist_ips_total", "legendFormat": "Blocked IPs" },
+        { "expr": "blocklist_subnets_total", "legendFormat": "Blocked Subnets" }
+      ]
     }
   ],
   "schemaVersion": 39,

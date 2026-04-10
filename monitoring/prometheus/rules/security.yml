@@ -67,6 +67,28 @@ groups:
           summary: "{{ $value }} repeat offender(s) banned by recidive jail"
           description: "IPs that were banned multiple times have been escalated to 30-day bans."
 
+      # Blocklist update stalled (no update in 2+ hours)
+      - alert: BlocklistUpdateStalled
+        expr: time() - blocklist_last_update_timestamp > 7200
+        for: 5m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Blocklist updater has not run in {{ $value | humanizeDuration }}"
+          description: "The automated blocklist update timer may have failed. Check: systemctl status blocklist.timer"
+
+      # Large blocklist growth (possible attack surge)
+      - alert: BlocklistGrowthSpike
+        expr: blocklist_ips_added_last_run > 10
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "{{ $value }} new IPs added to blocklist in the last update"
+          description: "The blocklist grew rapidly — possible coordinated attack surge."
+
   - name: system
     rules:
       # Container down
