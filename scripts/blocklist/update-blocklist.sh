@@ -8,6 +8,13 @@
 # abuse-subnets ipset.
 #
 # Whitelist entries in /etc/blocklist/whitelist.conf are never blocked.
+#
+# Threshold rationale:
+#   IP_BAN_THRESHOLD=3 means an IP must accumulate 3 fail2ban bans before being
+#   promoted to the permanent blocklist. Since fail2ban's sshd jail triggers on
+#   5 failed attempts, this represents ~15 failed login attempts over multiple
+#   ban cycles. Lowering this threshold is aggressive; raising it delays the
+#   promotion of clear attackers.
 
 set -euo pipefail
 
@@ -28,37 +35,47 @@ log() {
 }
 
 # Check if an IP falls within any whitelist entry.
-# Uses ipcalc if available, otherwise does a prefix match for /24 whitelists.
+# Values are passed to Python via environment variables to prevent command
+# injection through whitelist or log content.
 is_whitelisted() {
     local ip="$1"
     local entry
     while IFS= read -r entry; do
-        # Skip comments and empty lines
+        # Strip comments and whitespace
         entry="${entry%%#*}"
         entry="${entry// /}"
+        entry="${entry//$'\t'/}"
         [ -z "$entry" ] && continue
 
-        # Exact IP match
+        # Exact IP match (fast path, no subprocess)
         if [ "$entry" = "$ip" ]; then
             return 0
         fi
 
-        # CIDR match using python (more reliable than bash for this)
+        # CIDR match via python (safe env-var passing, no string interpolation)
         if [[ "$entry" == */* ]]; then
-            if python3 -c "
-import ipaddress, sys
+            if WL_IP="$ip" WL_ENTRY="$entry" python3 -c '
+import ipaddress, os, sys
 try:
-    ip = ipaddress.ip_address('$ip')
-    net = ipaddress.ip_network('$entry', strict=False)
+    ip = ipaddress.ip_address(os.environ["WL_IP"])
+    net = ipaddress.ip_network(os.environ["WL_ENTRY"], strict=False)
     sys.exit(0 if ip in net else 1)
 except Exception:
     sys.exit(1)
-" 2>/dev/null; then
+' 2>/dev/null; then
                 return 0
             fi
         fi
     done < "$WHITELIST_FILE"
     return 1
+}
+
+# Count entries in an ipset (robust against empty/missing sets).
+ipset_count() {
+    local set_name="$1"
+    local count
+    count=$(ipset list "$set_name" -terse 2>/dev/null | awk '/Number of entries/{print $4}') || true
+    echo "${count:-0}"
 }
 
 # --- Sanity checks -----------------------------------------------------------
@@ -85,11 +102,21 @@ fi
 
 mkdir -p "$STATE_DIR" "$(dirname "$METRICS_FILE")"
 
+# --- Lock: prevent concurrent runs -------------------------------------------
+
+LOCK_FILE="$STATE_DIR/.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "Another update is in progress, exiting"
+    exit 0
+fi
+
 # --- Find repeat offender IPs ------------------------------------------------
 
 log "Starting blocklist update (IP threshold=$IP_BAN_THRESHOLD, subnet threshold=$SUBNET_IP_THRESHOLD)"
 
 added_ips=0
+added_subnets=0
 skipped_ips=0
 
 # Scan current log plus any rotated logs (.1, .2.gz, etc.)
@@ -107,72 +134,82 @@ collect_ban_lines() {
 
 mapfile -t ban_lines < <(collect_ban_lines)
 
-# Extract IP counts
+# Extract IP counts (guard against empty array under set -u)
 declare -A ip_counts
-for line in "${ban_lines[@]}"; do
-    ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    [ -z "$ip" ] && continue
-    ip_counts["$ip"]=$((${ip_counts["$ip"]:-0} + 1))
-done
+if [ "${#ban_lines[@]}" -gt 0 ]; then
+    for line in "${ban_lines[@]}"; do
+        ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        [ -z "$ip" ] && continue
+        ip_counts["$ip"]=$((${ip_counts["$ip"]:-0} + 1))
+    done
+fi
 
-for ip in "${!ip_counts[@]}"; do
-    count="${ip_counts[$ip]}"
-    [ "$count" -lt "$IP_BAN_THRESHOLD" ] && continue
+# Process IPs (guard against empty associative array)
+if [ "${#ip_counts[@]}" -gt 0 ]; then
+    for ip in "${!ip_counts[@]}"; do
+        count="${ip_counts[$ip]}"
+        [ "$count" -lt "$IP_BAN_THRESHOLD" ] && continue
 
-    # Skip if already in set
-    if ipset test abuse-ips "$ip" 2>/dev/null; then
-        continue
-    fi
+        # Refresh TTL if already present, skip counting as "added"
+        if ipset test abuse-ips "$ip" 2>/dev/null; then
+            ipset add abuse-ips "$ip" -exist 2>/dev/null || true
+            continue
+        fi
 
-    # Skip if whitelisted
-    if is_whitelisted "$ip"; then
-        log "SKIP (whitelisted): $ip (bans=$count)"
-        skipped_ips=$((skipped_ips + 1))
-        continue
-    fi
+        # Skip if whitelisted
+        if is_whitelisted "$ip"; then
+            log "SKIP (whitelisted): $ip (bans=$count)"
+            skipped_ips=$((skipped_ips + 1))
+            continue
+        fi
 
-    # Add to ipset with timestamp comment
-    if ipset add abuse-ips "$ip" comment "bans=$count added=$(date -Iseconds)" 2>/dev/null; then
-        log "ADD IP: $ip (bans=$count)"
-        added_ips=$((added_ips + 1))
-    fi
-done
+        # Add new entry
+        if ipset add abuse-ips "$ip" comment "bans=$count added=$(date -Iseconds)" 2>/dev/null; then
+            log "ADD IP: $ip (bans=$count)"
+            added_ips=$((added_ips + 1))
+        fi
+    done
+fi
 
 # --- Find abusive subnets ----------------------------------------------------
 
-added_subnets=0
 declare -A subnet_ips
 
-for ip in "${!ip_counts[@]}"; do
-    # Extract /24 prefix (first three octets)
-    prefix=$(echo "$ip" | cut -d. -f1-3)
-    subnet_ips["$prefix"]="${subnet_ips[$prefix]:-} $ip"
-done
+if [ "${#ip_counts[@]}" -gt 0 ]; then
+    for ip in "${!ip_counts[@]}"; do
+        # Extract /24 prefix (first three octets)
+        prefix=$(echo "$ip" | cut -d. -f1-3)
+        subnet_ips["$prefix"]="${subnet_ips[$prefix]:-} $ip"
+    done
+fi
 
-for prefix in "${!subnet_ips[@]}"; do
-    # Count distinct IPs in this /24
-    distinct=$(echo "${subnet_ips[$prefix]}" | tr ' ' '\n' | sort -u | grep -c .)
-    [ "$distinct" -lt "$SUBNET_IP_THRESHOLD" ] && continue
+if [ "${#subnet_ips[@]}" -gt 0 ]; then
+    for prefix in "${!subnet_ips[@]}"; do
+        # Count distinct IPs in this /24 (wc -l is safe under set -e, unlike grep -c)
+        distinct=$(echo "${subnet_ips[$prefix]}" | tr ' ' '\n' | awk 'NF' | sort -u | wc -l)
+        [ "$distinct" -lt "$SUBNET_IP_THRESHOLD" ] && continue
 
-    subnet="${prefix}.0/24"
+        subnet="${prefix}.0/24"
 
-    # Skip if already in set
-    if ipset test abuse-subnets "$subnet" 2>/dev/null; then
-        continue
-    fi
+        # Refresh TTL if already present
+        if ipset test abuse-subnets "$subnet" 2>/dev/null; then
+            ipset add abuse-subnets "$subnet" -exist 2>/dev/null || true
+            continue
+        fi
 
-    # Skip if whitelisted (check any IP in the subnet)
-    first_ip=$(echo "${subnet_ips[$prefix]}" | awk '{print $1}')
-    if is_whitelisted "$first_ip"; then
-        log "SKIP subnet (whitelisted): $subnet"
-        continue
-    fi
+        # Skip if whitelisted (check any IP in the subnet)
+        first_ip=$(echo "${subnet_ips[$prefix]}" | awk '{print $1}')
+        if is_whitelisted "$first_ip"; then
+            log "SKIP subnet (whitelisted): $subnet"
+            continue
+        fi
 
-    if ipset add abuse-subnets "$subnet" comment "distinct_ips=$distinct added=$(date -Iseconds)" 2>/dev/null; then
-        log "ADD SUBNET: $subnet (distinct_ips=$distinct)"
-        added_subnets=$((added_subnets + 1))
-    fi
-done
+        if ipset add abuse-subnets "$subnet" comment "distinct_ips=$distinct added=$(date -Iseconds)" 2>/dev/null; then
+            log "ADD SUBNET: $subnet (distinct_ips=$distinct)"
+            added_subnets=$((added_subnets + 1))
+        fi
+    done
+fi
 
 # --- Persist state -----------------------------------------------------------
 
@@ -181,8 +218,8 @@ ipset save abuse-subnets > "$STATE_DIR/abuse-subnets.save" 2>/dev/null || true
 
 # --- Export metrics ----------------------------------------------------------
 
-total_ips=$(ipset list abuse-ips 2>/dev/null | grep -c '^[0-9]' || echo 0)
-total_subnets=$(ipset list abuse-subnets 2>/dev/null | grep -c '^[0-9]' || echo 0)
+total_ips=$(ipset_count abuse-ips)
+total_subnets=$(ipset_count abuse-subnets)
 now=$(date +%s)
 
 cat > "$METRICS_FILE.tmp" << EOF

@@ -492,15 +492,25 @@ ipset:abuse-ips    ipset:abuse-subnets
 - O(1) kernel hash lookup vs O(n) linear rule traversal
 - Scales to millions of entries without performance degradation
 - Survives reboots via a dedicated restore service
-- Works alongside existing UFW rules without conflict (ipset state is independent of UFW's iptables management)
+- Survives `ufw reload` via rules integrated into `/etc/ufw/before.rules`
+- Entries auto-expire after 30 days (ipset TTL) unless refreshed by the updater
 
 **Logic:**
-1. Parse `/var/log/fail2ban.log` (including rotated logs)
-2. IPs with ≥3 bans → add to `abuse-ips` ipset
+1. Parse `/var/log/fail2ban.log` (including rotated `.1`, `.2.gz` etc.)
+2. IPs with ≥3 bans → add to `abuse-ips` ipset (30-day TTL)
 3. /24 subnets with ≥3 distinct attacking IPs → add to `abuse-subnets` ipset
 4. Whitelist entries (localhost, private ranges, trusted IPs) are never blocked
-5. State is persisted to disk and reloaded on boot
-6. Metrics exported to Prometheus for visualization
+5. TTLs refresh automatically on re-encounter (stale entries age out)
+6. State is persisted to disk and restored at boot before UFW starts
+7. `flock` prevents concurrent runs from racing on ipset state
+8. Metrics exported to Prometheus for visualization
+
+**UFW integration:**
+Rules are added to `/etc/ufw/before.rules` inside the `*filter` section with marker comments for idempotent management. This means:
+- Rules survive `ufw reload` (iptables flush/reapply)
+- Rules survive `ufw disable/enable` cycles
+- Setup reloads UFW automatically after adding rules
+- Removing the marker block and running `ufw reload` cleanly removes the blocklist
 
 #### Installation
 
@@ -539,6 +549,8 @@ The update script accepts environment variables:
 | `SUBNET_IP_THRESHOLD` | 3 | Minimum distinct attacking IPs in a /24 before the subnet is added |
 | `FAIL2BAN_LOG` | `/var/log/fail2ban.log` | Path to fail2ban log |
 | `WHITELIST_FILE` | `/etc/blocklist/whitelist.conf` | Whitelist path |
+
+**Threshold rationale:** fail2ban's sshd jail bans after 5 failed attempts. Requiring 3 fail2ban bans before promotion means an IP triggered roughly 15 failed attempts across multiple ban cycles — a clear pattern of persistent abuse, not transient noise.
 
 To override, edit `/etc/systemd/system/blocklist.service` and add `Environment=...` lines, then `systemctl daemon-reload`.
 
@@ -592,6 +604,28 @@ sudo ipset flush abuse-subnets
 sudo ipset save abuse-ips > /var/lib/blocklist/abuse-ips.save
 sudo ipset save abuse-subnets > /var/lib/blocklist/abuse-subnets.save
 sudo systemctl start blocklist.service  # rebuild from logs
+```
+
+**Uninstall (remove blocklist entirely):**
+
+```bash
+# 1. Stop and disable services
+sudo systemctl disable --now blocklist.timer
+sudo systemctl disable blocklist-restore.service
+
+# 2. Remove UFW rules (edit /etc/ufw/before.rules and delete the marker block)
+sudo sed -i '/^# BEGIN blocklist/,/^# END blocklist/d' /etc/ufw/before.rules
+sudo ufw reload
+
+# 3. Destroy ipsets
+sudo ipset destroy abuse-ips
+sudo ipset destroy abuse-subnets
+
+# 4. Remove state and scripts
+sudo rm -rf /var/lib/blocklist /etc/blocklist
+sudo rm -f /usr/local/bin/update-blocklist.sh /usr/local/bin/restore-blocklist.sh
+sudo rm -f /etc/systemd/system/blocklist.service /etc/systemd/system/blocklist.timer /etc/systemd/system/blocklist-restore.service
+sudo systemctl daemon-reload
 ```
 
 **Metrics exported to Prometheus:**
