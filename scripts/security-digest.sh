@@ -12,6 +12,7 @@ f2b_running=false
 sshd_banned=0
 sshd_total_banned=0
 recidive_banned=0
+recidive_permanent_banned=0
 banned_ips=""
 
 if fail2ban-client ping > /dev/null 2>&1; then
@@ -28,6 +29,21 @@ if fail2ban-client ping > /dev/null 2>&1; then
   if [ -n "$recidive_status" ]; then
     recidive_banned=$(echo "$recidive_status" | grep "Currently banned:" | awk '{print $NF}')
   fi
+
+  recidive_permanent_status=$(fail2ban-client status recidive-permanent 2>/dev/null || echo "")
+  if [ -n "$recidive_permanent_status" ]; then
+    recidive_permanent_banned=$(echo "$recidive_permanent_status" | grep "Currently banned:" | awk '{print $NF}')
+  fi
+fi
+
+# Automated blocklist (ipset) stats
+blocklist_ips_total=0
+blocklist_subnets_total=0
+if command -v ipset >/dev/null 2>&1; then
+  blocklist_ips_total=$(ipset list abuse-ips -terse 2>/dev/null | awk '/Number of entries/{print $4}')
+  blocklist_ips_total=${blocklist_ips_total:-0}
+  blocklist_subnets_total=$(ipset list abuse-subnets -terse 2>/dev/null | awk '/Number of entries/{print $4}')
+  blocklist_subnets_total=${blocklist_subnets_total:-0}
 fi
 
 # SSH attack metrics from auth.log
@@ -82,8 +98,13 @@ cat << ENDJSON
     "sshd_currently_banned": ${sshd_banned:-0},
     "sshd_total_banned": ${sshd_total_banned:-0},
     "recidive_banned": ${recidive_banned:-0},
+    "recidive_permanent_banned": ${recidive_permanent_banned:-0},
     "bans_last_24h": $bans_24h,
     "banned_ips": "$banned_ips"
+  },
+  "blocklist": {
+    "ips_total": ${blocklist_ips_total:-0},
+    "subnets_total": ${blocklist_subnets_total:-0}
   },
   "ssh_attacks": {
     "failures_last_24h": $ssh_failures_24h,
