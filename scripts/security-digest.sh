@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# Ensure cron can find /usr/sbin tools (ipset, fail2ban-client).
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 # fail2ban status
 f2b_running=false
 sshd_banned=0

@@ -35,9 +35,12 @@ groups:
           description: "Multiple unique IPs are attempting SSH access — possible coordinated attack."
 
       # Many IPs currently banned
+      # Threshold raised from 20 to 50 after observing that the steady-state
+      # ban count sits at 21-24 (post-blocklist rollout). The previous threshold
+      # was below the noise floor and caused alert fatigue.
       - alert: HighBanCount
-        expr: fail2ban_banned_total{jail="sshd"} > 20
-        for: 0m
+        expr: fail2ban_banned_total{jail="sshd"} > 50
+        for: 15m
         labels:
           severity: warning
           category: security
@@ -67,16 +70,18 @@ groups:
           summary: "{{ $value }} repeat offender(s) banned by recidive jail"
           description: "IPs that were banned multiple times have been escalated to 30-day bans."
 
-      # Blocklist update stalled (no update in 2+ hours)
+      # Blocklist update stalled (no update in 2+ hours) OR metric never emitted.
+      # The absent() branch catches the first-run failure case where the updater
+      # never writes the timestamp file at all.
       - alert: BlocklistUpdateStalled
-        expr: time() - blocklist_last_update_timestamp > 7200
+        expr: (time() - blocklist_last_update_timestamp > 7200) or absent(blocklist_last_update_timestamp)
         for: 5m
         labels:
           severity: warning
           category: security
         annotations:
-          summary: "Blocklist updater has not run in {{ $value | humanizeDuration }}"
-          description: "The automated blocklist update timer may have failed. Check: systemctl status blocklist.timer"
+          summary: "Blocklist updater is stalled or metric is missing"
+          description: "The blocklist_last_update_timestamp metric is stale (>2h) or has never been emitted. Check: systemctl status blocklist.timer blocklist.service"
 
       # Large blocklist growth (possible attack surge)
       - alert: BlocklistGrowthSpike
