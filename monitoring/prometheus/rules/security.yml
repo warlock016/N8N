@@ -97,15 +97,17 @@ groups:
   - name: system
     rules:
       # Container down
+      # for: 5m tolerates planned deploy recreate cycles (~30-60s total)
+      # while still catching real outages within 5 minutes.
       - alert: ContainerDown
         expr: absent(container_last_seen{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) or (time() - container_last_seen{name=~"edge-.*|n8n-.*|monitoring-.*|qdrant|ollama"}) > 60
-        for: 2m
+        for: 5m
         labels:
           severity: critical
           category: system
         annotations:
           summary: "Container {{ $labels.name }} is down"
-          description: "Container {{ $labels.name }} has not been seen for more than 2 minutes."
+          description: "Container {{ $labels.name }} has not been seen for more than 5 minutes."
 
       # Container restarting
       - alert: ContainerRestarting
@@ -164,9 +166,10 @@ groups:
   - name: services
     rules:
       # Cloudflare tunnel down
+      # for: 5m tolerates planned deploy recreate cycles (~30-60s total).
       - alert: CloudflareTunnelDown
         expr: absent(container_last_seen{name="edge-cloudflared-1"}) or (time() - container_last_seen{name="edge-cloudflared-1"}) > 60
-        for: 1m
+        for: 5m
         labels:
           severity: critical
           category: services
@@ -175,9 +178,10 @@ groups:
           description: "The cloudflared container is not running. All public services are unreachable."
 
       # Traefik down
+      # for: 5m tolerates planned deploy recreate cycles (~30-60s total).
       - alert: TraefikDown
         expr: absent(container_last_seen{name="edge-traefik-1"}) or (time() - container_last_seen{name="edge-traefik-1"}) > 60
-        for: 1m
+        for: 5m
         labels:
           severity: critical
           category: services
@@ -186,9 +190,10 @@ groups:
           description: "Traefik is not running. All service routing is broken."
 
       # N8N down
+      # for: 5m tolerates planned deploy recreate cycles (~30-60s total).
       - alert: N8NDown
         expr: absent(container_last_seen{name="n8n-private"}) or (time() - container_last_seen{name="n8n-private"}) > 60
-        for: 2m
+        for: 5m
         labels:
           severity: critical
           category: services
