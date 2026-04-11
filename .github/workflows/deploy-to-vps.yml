@@ -266,7 +266,10 @@ jobs:
 
             echo "📡 Updating edge stack..."
             docker compose -p edge --env-file .env -f edge/compose.yml pull
-            docker compose -p edge --env-file .env -f edge/compose.yml up -d --remove-orphans
+            # --force-recreate: bind-mounted config files (Traefik, Cloudflared)
+            # are pinned to the release dir inode at container-start time, so
+            # config changes are invisible unless the container is recreated.
+            docker compose -p edge --env-file .env -f edge/compose.yml up -d --remove-orphans --force-recreate
 
             echo "  Waiting for edge to be ready..."
             for i in {1..30}; do
@@ -293,7 +296,10 @@ jobs:
 
             echo "📊 Updating monitoring..."
             docker compose -p monitoring -f monitoring/compose.yml pull
-            docker compose -p monitoring -f monitoring/compose.yml up -d --remove-orphans
+            # --force-recreate: Prometheus rules, Alertmanager config, and
+            # Grafana dashboards are bind-mounted from the release dir. See
+            # edge stack comment above for why force-recreate is required.
+            docker compose -p monitoring -f monitoring/compose.yml up -d --remove-orphans --force-recreate
 
             echo "✅ Edge and monitoring updated"
           SERVICES_EOF
