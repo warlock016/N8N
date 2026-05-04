@@ -159,7 +159,7 @@
         "overrides": []
       },
       "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sort_desc(sum by (name) (container_memory_usage_bytes{name=~\".+\", id=~\"/system.slice/docker-.*\"}))", "legendFormat": "{{name}}" }]
+      "targets": [{ "expr": "sort_desc(sum by (name) (container_memory_working_set_bytes{name=~\".+\", id=~\"/system.slice/docker-.*\"}))", "legendFormat": "{{name}}" }]
     },
     {
       "type": "bargauge",
