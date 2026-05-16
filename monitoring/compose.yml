@@ -116,7 +116,10 @@ services:
           memory: 128M
           cpus: '0.2'
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      # Spider `/` (small landing page) instead of `/metrics` — wget --spider
+      # closes the socket before reading the body, which races node_exporter's
+      # metric serialization and spams "connection reset by peer" per family.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/"]
       interval: 30s
       timeout: 10s
       retries: 3
